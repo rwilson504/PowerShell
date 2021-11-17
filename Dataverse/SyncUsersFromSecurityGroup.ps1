@@ -47,12 +47,17 @@ Import-Module -Name AzureAD
 [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
 [string]$SecurityGroupId
 
-# Conenct to Azure AD
-# Will prompt for Azure AD authentication
+# Conenct to Azure AD. Will prompt for Azure AD authentication
+# For information on how to utilize a username/password or application user
+# credentials see here: https://docs.microsoft.com/en-us/powershell/module/azuread/connect-azuread?view=azureadps-2.0
 Connect-AzureAD -Confirm
 
-# Connect to Power Platform
-# Will prompt Power Platform authentication
+# Connect to Power Platform. Will prompt Power Platform authentication
+# For information on how to utilize a username/password or application user
+# credentials see here: https://docs.microsoft.com/en-us/powershell/module/microsoft.powerapps.administration.powershell/add-powerappsaccount?view=pa-ps-latest
+Add-PowerAppsAccount
+
+# Get the specific environment we are going to use for sync
 $Environment = Get-AdminPowerAppEnvironment | Where-Object {$_.OrganizationId -eq $OrganizationId} | Select -First 1
 
 # Retrieves the members of the Azure AD Security Group
