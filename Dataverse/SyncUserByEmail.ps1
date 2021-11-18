@@ -16,11 +16,10 @@
     The email address of the user to sync
 
 .EXAMPLE
-    ./SyncUserByEmail.ps1 -OrganizationId 02c201b0-db76-4a6a-b3e1-a69202b479e6 -UserEmail tom@test.com
+    PS> ./SyncUserByEmail.ps1 -OrganizationId 02c201b0-db76-4a6a-b3e1-a69202b479e6 -UserEmail tom@test.com
 
-.PREREQUISITES
-    
-    .INSTALLS
+.NOTES    
+    INSTALLS
     Import the necessary modules using the following commands:
     Install-Module -Name Microsoft.PowerApps.Administration.PowerShell
     Install-Module -Name AzureAD
@@ -29,7 +28,7 @@
     Save-Module -Name Microsoft.PowerApps.Administration.PowerShell -Path
     Save-Module -Name AzureAD -Path
 
-    .SCRIPT SECURITY
+    SCRIPT SECURITY
     To run these commands you may need to enable your machine to allow remote signed scripts
     Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
     
