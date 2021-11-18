@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Syncs security group members to environment
+    Syncs a user to Dataverse environment
 
 .DESCRIPTION
-    Retrieves users from an Azure AD security group and synchronizes those users
-    as System Users with a Dataverse environment.
+    Retrieves user from an Azure AD using email address and synchronizes the user
+    as a System Users within a Dataverse environment.
 
 .AUTHOR
     Rick Wilson
@@ -12,11 +12,11 @@
 .PARAMETER OrganizationId
     You can find this by opening the Power Platform Admin site (admin.powerplatform.com) and copying the Organization ID from the details page for your environment.
 
-.PARAMETER SecurityGroupId
-    The Object Id of the group in the Azure Portal (portal.azure.com)
+.PARAMETER UserEmail
+    The email address of the user to sync
 
 .EXAMPLE
-    ./SyncUsersFromSecurityGroup.ps1 -OrganizationId 02c201b0-db76-4a6a-b3e1-a69202b479e6 -SecurityGroupId e25a94b2-3111-468e-9125-3d3db3938f13
+    ./SyncUserByEmail.ps1 -OrganizationId 02c201b0-db76-4a6a-b3e1-a69202b479e6 -UserEmail tom@test.com
 
 .PREREQUISITES
     
@@ -42,7 +42,7 @@ param(
 [string]$OrganizationId,
 
 [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)]
-[string]$SecurityGroupId
+[string]$UserEmail
 )
 
 # Import the modules to make sure you can access the cmdlets within this PowerShell session.
@@ -62,12 +62,9 @@ Add-PowerAppsAccount
 # Get the specific environment we are going to use for sync
 $Environment = Get-AdminPowerAppEnvironment | Where-Object {$_.OrganizationId -eq $OrganizationId} | Select -First 1
 
-# Retrieves the members of the Azure AD Security Group
-$GroupMembers = Get-AzureADGroupMember -ObjectId $SecurityGroupId
+# Retrieves the ObjectId of the user
+$User = Get-AzureADUser -ObjectId "$UserEmail"
 
-# Loop through all of the Users listed in the AD Security Group
-ForEach($User in $GroupMembers | Where-Object {$_.ObjectType -eq 'User'})
-{
-    # Synce each user to the Power Platform Environment.
-    Add-AdminPowerAppsSyncUser -EnvironmentName $Environment.EnvironmentName -PrincipalObjectId $User.ObjectId
-}
+# Sync the user to Dataverse organization
+Add-AdminPowerAppsSyncUser -EnvironmentName $Environment.EnvironmentName -PrincipalObjectId $User.ObjectId
+
