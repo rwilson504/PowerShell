@@ -16,22 +16,22 @@
     The schema name for the new relationship.
 
 .PARAMETER ReferencedEntity
-    The name of the referenced entity in the relationship.
+    The logical name of the entity that you now want to include as part of the polymorphic lookup.
 
 .PARAMETER ReferencingEntity
-    The name of the referencing entity in the relationship.
+    The logical name of the entity which the existing polymorphic lookup exists on.
 
 .PARAMETER LookupSchemaName
-    The schema name for the lookup attribute.
+    The schema name for the existing lookup attribute.
 
 .PARAMETER LookupDisplayName
-    The display name for the lookup attribute.
+    The display name for the existing lookup attribute.
 
 .PARAMETER LookupDescription
-    The description for the lookup attribute.
+    The description for the existing lookup attribute.
 
 .EXAMPLE
-    .\AddPolymorphicRelationship.ps1 -OrganizationUrl "https://your-org.crm.dynamics.com" -AccessToken "YOUR_ACCESS_TOKEN" -SchemaName "new_checkout_poly_new_researchresource" -ReferencedEntity "new_researchresource" -ReferencingEntity "new_checkout" -LookupSchemaName "new_CheckedoutItem" -LookupDisplayName "Checkout item" -LookupDescription "Checkout Polymorphic Lookup Attribute"
+    .\AddPolymorphicRelationship.ps1 -OrganizationUrl "https://your-org.crm.dynamics.com" -AccessToken "YOUR_ACCESS_TOKEN" -SchemaName "raw_existingentitywithpolylookup_raw_tablebeingaddedtopolylookup_raw_relatedto" -ReferencedEntity "new_tablebeingaddedtopolylookup" -ReferencingEntity "raw_existingentitywithpolylookup" -LookupSchemaName "raw_RelatedTo" -LookupDisplayName "Related To" -LookupDescription ""
 
     This example creates a new entity relationship for a polymorphic lookup with the specified parameters.
 #>
