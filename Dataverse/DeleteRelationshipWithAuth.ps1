@@ -11,10 +11,6 @@
 .PARAMETER ClientId
     The client ID (application ID) of your registered Azure AD app.
 
-.PARAMETER Scope
-    The scope for the access token. For Dataverse, this is usually in the form https://your-org.crm.dynamics.com/.default.
-    Default value is "https://your-org.crm.dynamics.com/.default".
-
 .PARAMETER Environment
     The Azure environment. Valid values are "Public", "GCC", "GCCH", "DoD". Default value is "Public".
 
@@ -33,14 +29,13 @@
 param (
     [string]$TenantId,
     [string]$ClientId,
-    [string]$Scope = "https://your-org.crm.dynamics.com/.default",
     [ValidateSet("Public", "GCC", "GCCH", "DoD")] [string]$Environment = "Public",
     [string]$OrganizationUrl,
     [string]$RelationshipName
 )
 
 # Get the access token
-$accessToken = & ..\EntraID\GetAccessTokenDeviceCode.ps1 -TenantId $TenantId -ClientId $ClientId -Scope $Scope -Environment $Environment
+$accessToken = & ..\EntraID\GetAccessTokenDeviceCode.ps1 -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
 
 # Delete the relationship
 $response = & .\DeleteRelationship.ps1 -OrganizationUrl $OrganizationUrl -AccessToken $accessToken -RelationshipName $RelationshipName
