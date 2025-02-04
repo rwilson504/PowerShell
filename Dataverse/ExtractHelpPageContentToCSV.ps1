@@ -41,8 +41,8 @@
     PS C:\> .\ExtractHelpPages.ps1 -SolutionFile "C:\Solutions\MySolution.zip" -OutputFile "C:\Output\HelpPages.csv" -ConvertToRichText -ConvertToPlainText
 
 .NOTES
-    Author: Your Name
-    Date  : YYYY-MM-DD
+    Author: Rick Wilson
+    Date  : 2025-02-04
     Version: 1.4
     Requirements:
         - PowerShell 5.0+ (for [System.IO.Compression.ZipFile])

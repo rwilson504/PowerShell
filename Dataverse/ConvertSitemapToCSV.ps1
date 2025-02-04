@@ -19,8 +19,8 @@
     Export complete. CSV file saved to: C:\Data\sitemap.csv
 
 .NOTES
-    Author: Your Name
-    Date  : YYYY-MM-DD
+    Author: Rick Wilson
+    Date  : 2025-02-04
     Version: 1.1
     Requirements: PowerShell 3.0 or later.
 #>
