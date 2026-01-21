@@ -78,7 +78,9 @@ param (
 
 # Get the access token using device code flow
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
-$accessToken = & ..\EntraID\GetAccessTokenDeviceCode.ps1 -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$authScript = Join-Path $scriptDir "..\EntraID\GetAccessTokenDeviceCode.ps1"
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
 
 if (-not $accessToken) {
     Write-Error "Failed to acquire access token."
@@ -107,7 +109,8 @@ if ($OutputPath) {
 }
 
 # Get record counts
-$results = & .\GetRecordCountByTable.ps1 @scriptParams
+$mainScript = Join-Path $scriptDir "GetRecordCountByTable.ps1"
+$results = & $mainScript @scriptParams
 
 # Output the results
 return $results

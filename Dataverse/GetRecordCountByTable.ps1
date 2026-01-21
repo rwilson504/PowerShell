@@ -93,8 +93,9 @@ function Get-AllReadableTables {
     
     # Query EntityDefinitions to get all entities with their read privileges
     # We filter for entities that are valid for read operations
+    # Include DataProviderId and TableType to identify virtual tables that don't support aggregates
     $metadataUrl = "$OrgUrl/api/data/v9.2/EntityDefinitions?" + 
-        "`$select=LogicalName,DisplayName,IsValidForAdvancedFind,CanCreateViews,IsCustomizable,IsActivity,IsActivityParty" +
+        "`$select=LogicalName,DisplayName,IsValidForAdvancedFind,CanCreateViews,IsCustomizable,IsActivity,IsActivityParty,DataProviderId,TableType,ExternalName" +
         "&`$filter=IsValidForAdvancedFind eq true and IsIntersect eq false"
     
     try {
@@ -130,9 +131,29 @@ function Get-AllReadableTables {
                 $logicalName 
             }
             
+            # Check if this is a virtual table (has DataProviderId) or special table type
+            # Virtual tables and data source tables typically don't support FetchXML aggregates
+            $isVirtual = $null -ne $entity.DataProviderId -and $entity.DataProviderId -ne [Guid]::Empty
+            $tableType = $entity.TableType
+            $hasExternalName = -not [string]::IsNullOrEmpty($entity.ExternalName)
+            
+            # Tables that likely don't support aggregates:
+            # - Virtual tables (have DataProviderId)
+            # - Tables with TableType = "Virtual" or "Elastic"
+            # - Data source tables (usually end with 'ds' or 'datasource')
+            $supportsAggregate = -not $isVirtual -and $tableType -ne "Virtual" -and $tableType -ne "Elastic"
+            
+            # Additional check for known data source table patterns
+            if ($logicalName -match '(datasource|^datalake|nrddatasource)$') {
+                $supportsAggregate = $false
+            }
+            
             $readableTables += [PSCustomObject]@{
                 LogicalName = $logicalName
                 DisplayName = $displayName
+                IsVirtual = $isVirtual
+                TableType = $tableType
+                SupportsAggregate = $supportsAggregate
             }
         }
         
@@ -231,8 +252,24 @@ function Get-RecordCounts {
         $currentIndex++
         $logicalName = if ($table -is [PSCustomObject]) { $table.LogicalName } else { $table }
         $displayName = if ($table -is [PSCustomObject] -and $table.DisplayName) { $table.DisplayName } else { $logicalName }
+        $supportsAggregate = if ($table -is [PSCustomObject] -and $null -ne $table.SupportsAggregate) { $table.SupportsAggregate } else { $true }
+        $isVirtual = if ($table -is [PSCustomObject] -and $null -ne $table.IsVirtual) { $table.IsVirtual } else { $false }
+        $tableType = if ($table -is [PSCustomObject] -and $table.TableType) { $table.TableType } else { "Standard" }
         
         Write-Progress -Activity "Getting record counts" -Status "Processing $logicalName ($currentIndex of $totalTables)" -PercentComplete (($currentIndex / $totalTables) * 100)
+        
+        # Skip virtual tables that don't support aggregates
+        if (-not $supportsAggregate) {
+            $results += [PSCustomObject]@{
+                TableLogicalName = $logicalName
+                TableDisplayName = $displayName
+                RecordCount = "N/A"
+                Status = "Virtual/DataSource (No Aggregate)"
+                TableType = $tableType
+                IsVirtual = $isVirtual
+            }
+            continue
+        }
         
         $count = Get-TableRecordCount -OrgUrl $OrgUrl -Headers $Headers -TableLogicalName $logicalName
         
@@ -248,6 +285,8 @@ function Get-RecordCounts {
             TableDisplayName = $displayName
             RecordCount = if ($count -lt 0) { "N/A" } else { $count }
             Status = $status
+            TableType = $tableType
+            IsVirtual = $isVirtual
         }
     }
     
@@ -275,12 +314,16 @@ try {
 
     # Calculate summary statistics
     $successfulResults = $results | Where-Object { $_.Status -eq "Success" }
+    $virtualTables = $results | Where-Object { $_.Status -eq "Virtual/DataSource (No Aggregate)" }
+    $errorTables = $results | Where-Object { $_.Status -in @("Error", "Invalid Table/Attribute", "No Read Permission") }
     $totalRecords = ($successfulResults | Measure-Object -Property RecordCount -Sum).Sum
     $tablesWithData = ($successfulResults | Where-Object { $_.RecordCount -gt 0 }).Count
 
     Write-Host "`n=== Summary ===" -ForegroundColor Green
-    Write-Host "Total tables queried: $($results.Count)"
-    Write-Host "Tables with read access: $($successfulResults.Count)"
+    Write-Host "Total tables found: $($results.Count)"
+    Write-Host "Standard tables queried: $($successfulResults.Count)"
+    Write-Host "Virtual/DataSource tables (skipped): $($virtualTables.Count)" -ForegroundColor Yellow
+    Write-Host "Tables with errors: $($errorTables.Count)" -ForegroundColor $(if ($errorTables.Count -gt 0) { "Red" } else { "Green" })
     Write-Host "Tables with data: $tablesWithData"
     Write-Host "Total records across all tables: $totalRecords"
     Write-Host ""
