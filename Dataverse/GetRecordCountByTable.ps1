@@ -432,23 +432,21 @@ try {
             }
         }
         "CSV" {
-            if ($OutputPath) {
-                $results | Export-Csv -Path $OutputPath -NoTypeInformation
-                Write-Host "Results exported to $OutputPath" -ForegroundColor Green
+            if (-not $OutputPath) {
+                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                $OutputPath = Join-Path (Get-Location) "recordcounts_$timestamp.csv"
             }
-            else {
-                $results | ConvertTo-Csv -NoTypeInformation
-            }
+            $results | Export-Csv -Path $OutputPath -NoTypeInformation
+            Write-Host "Results exported to $OutputPath" -ForegroundColor Green
         }
         "JSON" {
             $jsonOutput = $results | ConvertTo-Json -Depth 3
-            if ($OutputPath) {
-                $jsonOutput | Out-File -FilePath $OutputPath
-                Write-Host "Results exported to $OutputPath" -ForegroundColor Green
+            if (-not $OutputPath) {
+                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+                $OutputPath = Join-Path (Get-Location) "recordcounts_$timestamp.json"
             }
-            else {
-                $jsonOutput
-            }
+            $jsonOutput | Out-File -FilePath $OutputPath
+            Write-Host "Results exported to $OutputPath" -ForegroundColor Green
         }
     }
 
