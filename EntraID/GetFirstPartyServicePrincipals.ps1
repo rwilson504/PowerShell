@@ -53,6 +53,10 @@
 .NOTES
     Requires an access token with at least Application.Read.All or Directory.Read.All permissions
     on Microsoft Graph.
+
+    You can use the built-in "Microsoft Graph PowerShell" app registration
+    (AppId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) with the device code flow to acquire a token
+    with the necessary permissions.
 #>
 
 param (
