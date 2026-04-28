@@ -72,6 +72,16 @@
     in the output with Status = 'Skipped (Virtual)' / 'Skipped (Elastic)'. Set this switch to
     attempt them anyway (most will still fail).
 
+.PARAMETER NoBatchActivityProbes
+    When -IncludeLastActivity is set, the activity timestamp queries are bundled into OData $batch
+    HTTP calls (default 50 tables = 150 sub-requests per batch). Setting this switch falls back to
+    issuing each query individually - useful for debugging or when batch responses misbehave.
+    A 540-table activity probe goes from ~1620 requests (sequential) to ~33 requests (batched).
+
+.PARAMETER RequestThrottleDelayMs
+    Optional milliseconds to sleep between batch HTTP calls. Use to be polite to a shared /
+    production tenant when running multiple back-to-back analyses. Default is 0 (no delay).
+
 .NOTES
     The output always includes these metadata columns (no extra API cost beyond the existing
     metadata call): SchemaName, EntitySetName, IsCustomEntity, TableType.
@@ -142,11 +152,21 @@ param (
     [switch]$ActivityFallback,
 
     [Parameter(Mandatory = $false)]
-    [switch]$IncludeUnsupportedTypes
+    [switch]$IncludeUnsupportedTypes,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoBatchActivityProbes,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 60000)]
+    [int]$RequestThrottleDelayMs = 0
 )
 
 # Remove trailing slash from URL if present
 $OrganizationUrl = $OrganizationUrl.TrimEnd('/')
+
+# Load the shared OData $batch helper (provides Invoke-ODataBatch)
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "_ODataBatchHelper.ps1")
 
 # Set up headers for API calls
 $headers = @{
@@ -377,7 +397,9 @@ function Get-RecordCounts {
         [int]$BatchSize = 50,
         [bool]$IncludeLastActivity = $false,
         [bool]$ActivityFallback = $false,
-        [bool]$SkipUnsupportedTypes = $true
+        [bool]$SkipUnsupportedTypes = $true,
+        [bool]$BatchActivityProbes = $true,
+        [int]$RequestThrottleDelayMs = 0
     )
 
     # Build lookups for display names, schema names, entity set names, custom flag, and table type
@@ -515,12 +537,120 @@ function Get-RecordCounts {
         $modeNote = if ($ActivityFallback) { " (fallback enabled - includes empty/N/A tables)" } else { "" }
         Write-Host "Retrieving last activity timestamps for $totalToQuery table(s)$modeNote..." -ForegroundColor Cyan
 
-        $idx = 0
-        foreach ($logicalName in $tablesToProbe) {
-            $idx++
-            $entitySetName = $entitySetNameMap[$logicalName]
-            Write-Progress -Activity "Getting last activity" -Status "$idx of $totalToQuery : $logicalName" -PercentComplete (($idx / [math]::Max($totalToQuery, 1)) * 100)
-            $lastActivityMap[$logicalName] = Get-LastActivityForTable -OrgUrl $OrgUrl -Headers $Headers -EntitySetName $entitySetName
+        # Batch the activity probes via OData $batch. Each table needs 3 sub-requests
+        # (last created, last modified, oldest created), so a batch of N tables = 3N sub-requests.
+        # Default 20 tables per batch -> 60 sub-requests per HTTP call. When a batch fails
+        # outright (Dataverse rejects the whole batch with 400/404 if even one sub-request URL
+        # triggers a parse-time validation error), we binary-split the failed chunk and retry
+        # each half. This isolates the bad table(s) in O(log N) HTTP calls instead of falling
+        # back to N individual sequential probes (which would 30x our request count).
+        $tablesPerBatch = 20
+
+        function Probe-ActivityChunk {
+            param ([string[]]$Chunk, [int]$Depth = 0)
+            if ($Chunk.Count -eq 0) { return @{} }
+
+            $relRequests = New-Object System.Collections.Generic.List[string]
+            foreach ($logicalName in $Chunk) {
+                $es = $entitySetNameMap[$logicalName]
+                $relRequests.Add("$es`?`$top=1&`$select=createdon&`$orderby=createdon%20desc") | Out-Null
+                $relRequests.Add("$es`?`$top=1&`$select=modifiedon&`$orderby=modifiedon%20desc") | Out-Null
+                $relRequests.Add("$es`?`$top=1&`$select=createdon&`$orderby=createdon%20asc") | Out-Null
+            }
+
+            $batchResults = Invoke-ODataBatch -OrgUrl $OrgUrl -Headers $Headers -RelativeRequests $relRequests.ToArray()
+
+            # Detect total batch failure (all nulls)
+            $batchFailed = $true
+            foreach ($r in $batchResults) {
+                if ($null -ne $r) { $batchFailed = $false; break }
+            }
+
+            $out = @{}
+            if ($batchFailed -and $Chunk.Count -gt 1) {
+                # Binary split and recurse
+                $mid = [math]::Floor($Chunk.Count / 2)
+                $left  = $Chunk[0..($mid - 1)]
+                $right = $Chunk[$mid..($Chunk.Count - 1)]
+                foreach ($kv in (Probe-ActivityChunk -Chunk $left  -Depth ($Depth + 1)).GetEnumerator()) { $out[$kv.Key] = $kv.Value }
+                foreach ($kv in (Probe-ActivityChunk -Chunk $right -Depth ($Depth + 1)).GetEnumerator()) { $out[$kv.Key] = $kv.Value }
+                return $out
+            }
+            elseif ($batchFailed -and $Chunk.Count -eq 1) {
+                # Single table that genuinely can't be probed - emit empty result
+                $out[$Chunk[0]] = [PSCustomObject]@{
+                    LastCreatedOn         = $null
+                    LastModifiedOn        = $null
+                    OldestRecordCreatedOn = $null
+                }
+                return $out
+            }
+
+            # Successful (full or partial) batch - unpack 3 sub-responses per table
+            for ($t = 0; $t -lt $Chunk.Count; $t++) {
+                $logicalName = $Chunk[$t]
+                $base = $t * 3
+                $r = [PSCustomObject]@{
+                    LastCreatedOn         = $null
+                    LastModifiedOn        = $null
+                    OldestRecordCreatedOn = $null
+                }
+                $createdResp  = $batchResults[$base]
+                $modifiedResp = $batchResults[$base + 1]
+                $oldestResp   = $batchResults[$base + 2]
+
+                if ($createdResp -and $createdResp.value -and $createdResp.value.Count -gt 0) {
+                    $r.LastCreatedOn = $createdResp.value[0].createdon
+                }
+                if ($modifiedResp -and $modifiedResp.value -and $modifiedResp.value.Count -gt 0) {
+                    $r.LastModifiedOn = $modifiedResp.value[0].modifiedon
+                }
+                if ($oldestResp -and $oldestResp.value -and $oldestResp.value.Count -gt 0) {
+                    $r.OldestRecordCreatedOn = $oldestResp.value[0].createdon
+                }
+                $out[$logicalName] = $r
+            }
+            return $out
+        }
+
+        if ($totalToQuery -eq 0) {
+            # nothing to do
+        }
+        elseif ($BatchActivityProbes) {
+            $totalBatches = [math]::Ceiling($totalToQuery / $tablesPerBatch)
+            for ($b = 0; $b -lt $totalBatches; $b++) {
+                $start = $b * $tablesPerBatch
+                $end   = [math]::Min($start + $tablesPerBatch - 1, $totalToQuery - 1)
+                $chunk = $tablesToProbe[$start..$end]
+
+                Write-Progress -Activity "Getting last activity" `
+                    -Status "Batch $($b + 1) of $totalBatches - $($chunk.Count) table(s)" `
+                    -PercentComplete (($b + 1) / $totalBatches * 100)
+
+                $chunkResults = Probe-ActivityChunk -Chunk $chunk
+                foreach ($kv in $chunkResults.GetEnumerator()) {
+                    $lastActivityMap[$kv.Key] = $kv.Value
+                }
+
+                # Optional polite delay between batches
+                if ($RequestThrottleDelayMs -gt 0 -and $b -lt ($totalBatches - 1)) {
+                    Start-Sleep -Milliseconds $RequestThrottleDelayMs
+                }
+            }
+        }
+        else {
+            # Sequential fallback (3 individual requests per table) - useful for debugging
+            $idx = 0
+            foreach ($logicalName in $tablesToProbe) {
+                $idx++
+                $entitySetName = $entitySetNameMap[$logicalName]
+                Write-Progress -Activity "Getting last activity" -Status "$idx of $totalToQuery : $logicalName" -PercentComplete (($idx / [math]::Max($totalToQuery, 1)) * 100)
+                $lastActivityMap[$logicalName] = Get-LastActivityForTable -OrgUrl $OrgUrl -Headers $Headers -EntitySetName $entitySetName
+
+                if ($RequestThrottleDelayMs -gt 0 -and $idx -lt $totalToQuery) {
+                    Start-Sleep -Milliseconds $RequestThrottleDelayMs
+                }
+            }
         }
 
         Write-Progress -Activity "Getting last activity" -Completed
@@ -647,7 +777,7 @@ try {
     }
 
     # Get record counts for all tables using RetrieveTotalRecordCount
-    $results = Get-RecordCounts -OrgUrl $OrganizationUrl -Headers $headers -TableList $tablesToQuery -BatchSize $BatchSize -IncludeLastActivity:$IncludeLastActivity -ActivityFallback:$ActivityFallback -SkipUnsupportedTypes:(-not $IncludeUnsupportedTypes)
+    $results = Get-RecordCounts -OrgUrl $OrganizationUrl -Headers $headers -TableList $tablesToQuery -BatchSize $BatchSize -IncludeLastActivity:$IncludeLastActivity -ActivityFallback:$ActivityFallback -SkipUnsupportedTypes:(-not $IncludeUnsupportedTypes) -BatchActivityProbes:(-not $NoBatchActivityProbes) -RequestThrottleDelayMs $RequestThrottleDelayMs
 
     # Calculate summary statistics
     $successfulResults = $results | Where-Object { $_.Status -eq "Success" }

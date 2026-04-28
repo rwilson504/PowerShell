@@ -61,9 +61,13 @@
 
 .PARAMETER BatchRequestSize
     Number of per-attribute count requests bundled into a single OData $batch HTTP call.
-    Default is 50. Dataverse allows up to 1000 sub-requests per batch but smaller batches
-    keep the URL/body well under platform limits and provide more progress granularity.
+    Default is 100. Dataverse allows up to 1000 sub-requests per batch but a moderate
+    size keeps the URL/body well under platform limits and provides progress granularity.
     Set to 1 to disable batching (issue every request individually).
+
+.PARAMETER RequestThrottleDelayMs
+    Optional milliseconds to sleep between batch HTTP calls. Use to stay polite to a
+    shared / production tenant when running multiple back-to-back analyses. Default is 0.
 
 .PARAMETER OutputFormat
     The output format. Valid values are "Table", "CSV", "JSON". Default is "Table".
@@ -119,7 +123,11 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 1000)]
-    [int]$BatchRequestSize = 50,
+    [int]$BatchRequestSize = 100,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 60000)]
+    [int]$RequestThrottleDelayMs = 0,
 
     [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]
@@ -321,115 +329,13 @@ function Get-FieldPopulatedCount {
 }
 
 function Invoke-ODataBatch {
-    <#
-    .SYNOPSIS
-        Posts a multipart/mixed OData $batch containing GET sub-requests and returns
-        the parsed JSON body of each response, in request order. Failed sub-requests
-        return $null in their slot.
-    #>
-    param (
-        [string]$OrgUrl,
-        [hashtable]$Headers,
-        [string[]]$RelativeRequests   # e.g. "accounts?$filter=...&$count=true&$top=1"
-    )
-
-    $boundary = "batch_$([guid]::NewGuid().ToString('N'))"
-    $sb = [System.Text.StringBuilder]::new()
-    foreach ($req in $RelativeRequests) {
-        # CRLF line endings are required by RFC 2046 / OData batch spec
-        [void]$sb.Append("--$boundary`r`n")
-        [void]$sb.Append("Content-Type: application/http`r`n")
-        [void]$sb.Append("Content-Transfer-Encoding: binary`r`n")
-        [void]$sb.Append("`r`n")
-        [void]$sb.Append("GET /api/data/v9.2/$req HTTP/1.1`r`n")
-        [void]$sb.Append("Accept: application/json`r`n")
-        [void]$sb.Append("OData-Version: 4.0`r`n")
-        [void]$sb.Append("OData-MaxVersion: 4.0`r`n")
-        [void]$sb.Append("`r`n")
-    }
-    [void]$sb.Append("--$boundary--`r`n")
-    $body = $sb.ToString()
-
-    # Build a request-specific header set: keep the auth header but swap Content-Type
-    $batchHeaders = @{}
-    foreach ($k in $Headers.Keys) {
-        if ($k -ne 'Content-Type') { $batchHeaders[$k] = $Headers[$k] }
-    }
-    $batchHeaders['Content-Type'] = "multipart/mixed; boundary=$boundary"
-
-    try {
-        $resp = Invoke-WebRequest -Uri "$OrgUrl/api/data/v9.2/`$batch" `
-            -Method Post -Headers $batchHeaders -Body $body -UseBasicParsing
-    }
-    catch {
-        Write-Warning "OData batch request failed: $_"
-        # Return one $null per request so the caller can fall back / mark as error
-        return @($null) * $RelativeRequests.Count
-    }
-
-    # PowerShell 7's Invoke-WebRequest returns Content as a byte[]; Windows PowerShell
-    # returns a string. Decode UTF-8 explicitly when needed.
-    $respText = if ($resp.Content -is [byte[]]) {
-        [System.Text.Encoding]::UTF8.GetString($resp.Content)
-    }
-    else {
-        [string]$resp.Content
-    }
-
-    # Discover the response boundary from Content-Type
-    $respCT = $resp.Headers['Content-Type']
-    if ($respCT -is [array]) { $respCT = $respCT[0] }
-    $respBoundary = $null
-    if ($respCT -match 'boundary=([^;]+)') {
-        $respBoundary = $matches[1].Trim('"')
-    }
-    if (-not $respBoundary) {
-        Write-Warning "Could not parse response boundary from batch response."
-        return @($null) * $RelativeRequests.Count
-    }
-
-    # Split into parts. The leading boundary marker plus trailing terminator are non-content.
-    $parts = $respText -split [regex]::Escape("--$respBoundary")
-
-    $results = New-Object System.Collections.Generic.List[object]
-    foreach ($part in $parts) {
-        $trimmed = $part.Trim()
-        if ($trimmed -eq '' -or $trimmed -eq '--') { continue }
-
-        # Each part body looks like:
-        #   Content-Type: application/http
-        #   Content-Transfer-Encoding: binary
-        #
-        #   HTTP/1.1 200 OK
-        #   Header: value
-        #   ...
-        #
-        #   {"@odata.context":"...","@odata.count":150,"value":[...]}
-        #
-        # Extract the JSON between the first '{' and the last '}' of the part.
-        $startIdx = $part.IndexOf('{')
-        $endIdx   = $part.LastIndexOf('}')
-        if ($startIdx -lt 0 -or $endIdx -lt $startIdx) {
-            $results.Add($null)
-            continue
-        }
-        $json = $part.Substring($startIdx, $endIdx - $startIdx + 1)
-        try {
-            $obj = $json | ConvertFrom-Json -ErrorAction Stop
-            $results.Add($obj)
-        }
-        catch {
-            $results.Add($null)
-        }
-    }
-
-    # Sanity check: the parsed result count should match the request count
-    if ($results.Count -ne $RelativeRequests.Count) {
-        Write-Warning "Batch response part count ($($results.Count)) does not match request count ($($RelativeRequests.Count))."
-    }
-
-    return $results.ToArray()
+    # Loaded from _ODataBatchHelper.ps1 (dot-sourced below).
+    # Stub kept for documentation; the real implementation lives in the helper.
+    throw "Invoke-ODataBatch placeholder - helper failed to load."
 }
+
+# Load the shared OData $batch helper (overrides the stub above)
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "_ODataBatchHelper.ps1")
 
 # Main script execution
 try {
@@ -596,6 +502,11 @@ try {
                 }
                 else {
                     $batchResults = Invoke-ODataBatch -OrgUrl $OrganizationUrl -Headers $headers -RelativeRequests $relRequests
+                }
+
+                # Optional polite delay between batch HTTP calls (skip after the last batch)
+                if ($RequestThrottleDelayMs -gt 0 -and $b -lt ($batchCount - 1)) {
+                    Start-Sleep -Milliseconds $RequestThrottleDelayMs
                 }
 
                 for ($k = 0; $k -lt $chunk.Count; $k++) {

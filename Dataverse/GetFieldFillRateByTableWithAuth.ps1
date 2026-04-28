@@ -99,7 +99,11 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 1000)]
-    [int]$BatchRequestSize = 50,
+    [int]$BatchRequestSize = 100,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 60000)]
+    [int]$RequestThrottleDelayMs = 0,
 
     [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]
@@ -138,8 +142,9 @@ if ($IncludeSystemAttributes)  { $scriptParams.IncludeSystemAttributes  = $true 
 if ($CustomAttributesOnly)     { $scriptParams.CustomAttributesOnly     = $true }
 if ($StandardAttributesOnly)   { $scriptParams.StandardAttributesOnly   = $true }
 if ($Filter)                   { $scriptParams.Filter                   = $Filter }
-if ($BatchRequestSize -ne 50)  { $scriptParams.BatchRequestSize         = $BatchRequestSize }
-if ($OutputPath)               { $scriptParams.OutputPath               = $OutputPath }
+if ($BatchRequestSize -ne 100)         { $scriptParams.BatchRequestSize         = $BatchRequestSize }
+if ($RequestThrottleDelayMs -gt 0)     { $scriptParams.RequestThrottleDelayMs   = $RequestThrottleDelayMs }
+if ($OutputPath)                       { $scriptParams.OutputPath               = $OutputPath }
 
 $mainScript = Join-Path $scriptDir "GetFieldFillRateByTable.ps1"
 $results = & $mainScript @scriptParams

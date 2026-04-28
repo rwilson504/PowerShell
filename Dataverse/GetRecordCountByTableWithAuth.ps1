@@ -125,7 +125,14 @@ param (
     [switch]$ActivityFallback,
 
     [Parameter(Mandatory = $false)]
-    [switch]$IncludeUnsupportedTypes
+    [switch]$IncludeUnsupportedTypes,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoBatchActivityProbes,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(0, 60000)]
+    [int]$RequestThrottleDelayMs = 0
 )
 
 # Get the access token using device code flow
@@ -178,6 +185,14 @@ if ($ActivityFallback) {
 
 if ($IncludeUnsupportedTypes) {
     $scriptParams.IncludeUnsupportedTypes = $true
+}
+
+if ($NoBatchActivityProbes) {
+    $scriptParams.NoBatchActivityProbes = $true
+}
+
+if ($RequestThrottleDelayMs -gt 0) {
+    $scriptParams.RequestThrottleDelayMs = $RequestThrottleDelayMs
 }
 
 # Get record counts
