@@ -677,7 +677,7 @@ try {
         "CSV" {
             if (-not $OutputPath) {
                 $timestamp  = Get-Date -Format "yyyyMMdd_HHmmss"
-                $OutputPath = Join-Path (Get-Location) "fieldfillrate_$timestamp.csv"
+                $OutputPath = Join-Path (Get-Location) "attributeusage_$timestamp.csv"
             }
             $sorted | Export-Csv -Path $OutputPath -NoTypeInformation
             Write-Host "Results exported to $OutputPath" -ForegroundColor Green
@@ -685,7 +685,7 @@ try {
         "JSON" {
             if (-not $OutputPath) {
                 $timestamp  = Get-Date -Format "yyyyMMdd_HHmmss"
-                $OutputPath = Join-Path (Get-Location) "fieldfillrate_$timestamp.json"
+                $OutputPath = Join-Path (Get-Location) "attributeusage_$timestamp.json"
             }
             ($sorted | ConvertTo-Json -Depth 4) | Out-File -FilePath $OutputPath
             Write-Host "Results exported to $OutputPath" -ForegroundColor Green
