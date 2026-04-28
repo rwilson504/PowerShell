@@ -11,12 +11,12 @@
     Can also be run manually any time.
 
 .PARAMETER OutputPath
-    Where to write the zip. Defaults to one level above the repo root
-    (e.g., ..\PowerShell.zip) so the file does not pollute the working tree.
+    Where to write the zip. Defaults to the repo root (same directory as README.md),
+    e.g., <repo>\PowerShell.zip. The zip is excluded from git tracking via .gitignore (*.zip).
 
 .EXAMPLE
     .\.githooks\Build-Zip.ps1
-    Writes ..\PowerShell.zip relative to the repo root.
+    Writes <repo>\PowerShell.zip in the repo root.
 
 .EXAMPLE
     .\.githooks\Build-Zip.ps1 -OutputPath C:\transfer\PowerShell.zip
@@ -36,11 +36,10 @@ if (-not $repoRoot -or $LASTEXITCODE -ne 0) {
 }
 $repoRoot = $repoRoot.Trim()
 
-# Default output: <parent of repo>\<repo-name>.zip
+# Default output: <repo-root>\<repo-name>.zip (kept out of git via *.zip in .gitignore)
 if (-not $OutputPath) {
     $repoName    = Split-Path -Leaf $repoRoot
-    $parentDir   = Split-Path -Parent $repoRoot
-    $OutputPath  = Join-Path $parentDir "$repoName.zip"
+    $OutputPath  = Join-Path $repoRoot "$repoName.zip"
 }
 
 # Ensure the output directory exists
