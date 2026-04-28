@@ -66,14 +66,25 @@
     stale 0 values on test/sandbox environments or for tables that don't participate in stats
     collection. If activity queries find records, the row's UsageBucket is updated accordingly.
 
+.PARAMETER IncludeUnsupportedTypes
+    By default, tables with TableType = Virtual or Elastic are pre-skipped because
+    RetrieveTotalRecordCount does not support them and trying causes batch failures. They appear
+    in the output with Status = 'Skipped (Virtual)' / 'Skipped (Elastic)'. Set this switch to
+    attempt them anyway (most will still fail).
+
 .NOTES
     The output always includes these metadata columns (no extra API cost beyond the existing
-    metadata call): SchemaName, EntitySetName, IsCustomEntity.
+    metadata call): SchemaName, EntitySetName, IsCustomEntity, TableType.
 
-    The RetrieveTotalRecordCount API rejects an entire batch payload if any single entity in it
-    is unsupported (virtual tables, elastic tables, etc.). When a batch fails, the script
-    automatically retries each table in that batch individually so one bad apple does not poison
-    the rest. Tables that still fail individually are reported with Status = "Error".
+    The RetrieveTotalRecordCount API does not support Virtual or Elastic tables. By default
+    these are pre-skipped (Status = 'Skipped (Virtual)' / 'Skipped (Elastic)'). When -IncludeLastActivity
+    is set, the activity probe is still attempted for elastic tables (which support OData queries);
+    virtual tables vary by data provider.
+
+    The RetrieveTotalRecordCount API also rejects an entire batch payload if any single entity in
+    it is unsupported. When a batch fails, the script automatically retries each table in that
+    batch individually so one bad apple does not poison the rest. Tables that still fail
+    individually are reported with Status = 'Error'.
 
 .EXAMPLE
     .\GetRecordCountByTable.ps1 -OrganizationUrl "https://your-org.crm.dynamics.com" -AccessToken $token -Tables @("account", "contact", "lead")
@@ -128,7 +139,10 @@ param (
     [switch]$IncludeLastActivity,
 
     [Parameter(Mandatory = $false)]
-    [switch]$ActivityFallback
+    [switch]$ActivityFallback,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeUnsupportedTypes
 )
 
 # Remove trailing slash from URL if present
@@ -164,7 +178,7 @@ function Get-AllReadableTables {
         $filter += " and IsCustomEntity eq true"
     }
     $metadataUrl = "$OrgUrl/api/data/v9.2/EntityDefinitions?" + 
-        "`$select=LogicalName,SchemaName,EntitySetName,DisplayName,IsCustomEntity,IsValidForAdvancedFind" +
+        "`$select=LogicalName,SchemaName,EntitySetName,DisplayName,IsCustomEntity,IsValidForAdvancedFind,TableType" +
         "&`$filter=$filter"
     
     try {
@@ -193,6 +207,7 @@ function Get-AllReadableTables {
                 SchemaName      = $entity.SchemaName
                 EntitySetName   = $entity.EntitySetName
                 IsCustomEntity  = [bool]$entity.IsCustomEntity
+                TableType       = $entity.TableType
             }
         }
         
@@ -234,7 +249,7 @@ function Get-EntitySetNameMap {
 
         $filterClauses = ($chunk | ForEach-Object { "LogicalName eq '$_'" }) -join " or "
         $metadataUrl = "$OrgUrl/api/data/v9.2/EntityDefinitions?" +
-            "`$select=LogicalName,SchemaName,EntitySetName,DisplayName,IsCustomEntity" +
+            "`$select=LogicalName,SchemaName,EntitySetName,DisplayName,IsCustomEntity,TableType" +
             "&`$filter=$filterClauses"
 
         try {
@@ -244,6 +259,7 @@ function Get-EntitySetNameMap {
                     EntitySetName  = $entity.EntitySetName
                     SchemaName     = $entity.SchemaName
                     IsCustomEntity = [bool]$entity.IsCustomEntity
+                    TableType      = $entity.TableType
                     DisplayName    = if ($entity.DisplayName.UserLocalizedLabel) {
                         $entity.DisplayName.UserLocalizedLabel.Label
                     } else {
@@ -360,14 +376,16 @@ function Get-RecordCounts {
         [array]$TableList,
         [int]$BatchSize = 50,
         [bool]$IncludeLastActivity = $false,
-        [bool]$ActivityFallback = $false
+        [bool]$ActivityFallback = $false,
+        [bool]$SkipUnsupportedTypes = $true
     )
 
-    # Build lookups for display names, schema names, entity set names, and custom flag
+    # Build lookups for display names, schema names, entity set names, custom flag, and table type
     $displayNameMap = @{}
     $schemaNameMap = @{}
     $entitySetNameMap = @{}
     $isCustomEntityMap = @{}
+    $tableTypeMap = @{}
     $allLogicalNames = @()
 
     foreach ($table in $TableList) {
@@ -376,18 +394,20 @@ function Get-RecordCounts {
         $entitySetName = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['EntitySetName']) { $table.EntitySetName } else { $null }
         $schemaName = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['SchemaName']) { $table.SchemaName } else { $null }
         $isCustom = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['IsCustomEntity']) { [bool]$table.IsCustomEntity } else { $null }
+        $tableType = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['TableType']) { $table.TableType } else { $null }
 
         $displayNameMap[$logicalName] = $displayName
         $entitySetNameMap[$logicalName] = $entitySetName
         $schemaNameMap[$logicalName] = $schemaName
         $isCustomEntityMap[$logicalName] = $isCustom
+        $tableTypeMap[$logicalName] = $tableType
         $allLogicalNames += $logicalName
     }
 
-    # Always look up missing metadata (SchemaName, EntitySetName, IsCustomEntity) so output
+    # Always look up missing metadata (SchemaName, EntitySetName, IsCustomEntity, TableType) so output
     # columns are populated even when the user passed bare logical-name strings via -Tables.
     $missingMetadata = $allLogicalNames | Where-Object {
-        -not $entitySetNameMap[$_] -or -not $schemaNameMap[$_] -or $null -eq $isCustomEntityMap[$_]
+        -not $entitySetNameMap[$_] -or -not $schemaNameMap[$_] -or $null -eq $isCustomEntityMap[$_] -or -not $tableTypeMap[$_]
     }
     if ($missingMetadata.Count -gt 0) {
         Write-Host "Looking up metadata for $($missingMetadata.Count) table(s)..." -ForegroundColor Cyan
@@ -396,6 +416,7 @@ function Get-RecordCounts {
             if (-not $entitySetNameMap[$logicalName]) { $entitySetNameMap[$logicalName] = $lookupMap[$logicalName].EntitySetName }
             if (-not $schemaNameMap[$logicalName])    { $schemaNameMap[$logicalName]    = $lookupMap[$logicalName].SchemaName }
             if ($null -eq $isCustomEntityMap[$logicalName]) { $isCustomEntityMap[$logicalName] = $lookupMap[$logicalName].IsCustomEntity }
+            if (-not $tableTypeMap[$logicalName]) { $tableTypeMap[$logicalName] = $lookupMap[$logicalName].TableType }
             # Update display name if we didn't have one (i.e. user passed a bare string)
             if (-not $displayNameMap[$logicalName] -or $displayNameMap[$logicalName] -eq $logicalName) {
                 $displayNameMap[$logicalName] = $lookupMap[$logicalName].DisplayName
@@ -403,17 +424,34 @@ function Get-RecordCounts {
         }
     }
 
-    $totalTables = $allLogicalNames.Count
-    $totalBatches = [math]::Ceiling($totalTables / $BatchSize)
+    # Pre-skip Virtual/Elastic tables (RetrieveTotalRecordCount does not support them)
+    $skippedTables = @{}  # logicalName -> reason ("Virtual" / "Elastic")
+    $namesToBatch = $allLogicalNames
+    if ($SkipUnsupportedTypes) {
+        $virtualCount = 0
+        $elasticCount = 0
+        $namesToBatch = $allLogicalNames | Where-Object {
+            $tt = $tableTypeMap[$_]
+            if ($tt -eq 'Virtual')  { $skippedTables[$_] = 'Virtual'; $virtualCount++; return $false }
+            if ($tt -eq 'Elastic')  { $skippedTables[$_] = 'Elastic'; $elasticCount++; return $false }
+            return $true
+        }
+        if ($skippedTables.Count -gt 0) {
+            Write-Host "Pre-skipping $($skippedTables.Count) unsupported table(s): $virtualCount Virtual, $elasticCount Elastic. Use -IncludeUnsupportedTypes to attempt them anyway." -ForegroundColor Yellow
+        }
+    }
+
+    $totalTables = $namesToBatch.Count
+    $totalBatches = if ($totalTables -gt 0) { [math]::Ceiling($totalTables / $BatchSize) } else { 0 }
     $allCounts = @{}
     $failedBatches = @()
 
-    Write-Host "Retrieving record counts in $totalBatches batch(es) of up to $BatchSize tables..." -ForegroundColor Cyan
+    Write-Host "Retrieving record counts for $totalTables table(s) in $totalBatches batch(es) of up to $BatchSize tables..." -ForegroundColor Cyan
 
     for ($batchIndex = 0; $batchIndex -lt $totalBatches; $batchIndex++) {
         $startIdx = $batchIndex * $BatchSize
         $endIdx = [math]::Min($startIdx + $BatchSize - 1, $totalTables - 1)
-        $batchNames = $allLogicalNames[$startIdx..$endIdx]
+        $batchNames = $namesToBatch[$startIdx..$endIdx]
         $batchNum = $batchIndex + 1
 
         Write-Progress -Activity "Getting record counts" -Status "Batch $batchNum of $totalBatches ($($batchNames.Count) tables)" -PercentComplete (($batchNum / $totalBatches) * 100)
@@ -461,10 +499,14 @@ function Get-RecordCounts {
         # By default only query tables with count > 0 to save API calls.
         # When -ActivityFallback is set, also query tables where the count came back as 0
         # or N/A (the count API can return stale 0 values; the activity probe is authoritative).
+        # Skipped Virtual tables: don't probe (their data provider may not support OData filters).
+        # Skipped Elastic tables: still probe - they support OData $top/$orderby on createdon/modifiedon.
         $tablesToProbe = $allLogicalNames | Where-Object {
             if (-not $entitySetNameMap[$_]) { return $false }
+            if ($skippedTables[$_] -eq 'Virtual') { return $false }
             $hasCount = $allCounts.ContainsKey($_)
             if ($hasCount -and $allCounts[$_] -gt 0) { return $true }
+            if ($skippedTables[$_] -eq 'Elastic') { return $true }  # always probe elastic
             if ($ActivityFallback) { return $true }
             return $false
         }
@@ -494,6 +536,7 @@ function Get-RecordCounts {
         $schemaName     = $schemaNameMap[$logicalName]
         $entitySetName  = $entitySetNameMap[$logicalName]
         $isCustomEntity = $isCustomEntityMap[$logicalName]
+        $tableType      = $tableTypeMap[$logicalName]
 
         $lastCreated  = $null
         $lastModified = $null
@@ -505,7 +548,11 @@ function Get-RecordCounts {
         }
 
         # Determine status & record count value
-        if ($allCounts.ContainsKey($logicalName)) {
+        if ($skippedTables.ContainsKey($logicalName)) {
+            $status      = "Skipped ($($skippedTables[$logicalName]))"
+            $recordCount = "N/A"
+        }
+        elseif ($allCounts.ContainsKey($logicalName)) {
             $status      = "Success"
             $recordCount = $allCounts[$logicalName]
         }
@@ -534,10 +581,14 @@ function Get-RecordCounts {
                              else { $null }
 
             # If we got activity timestamps, the table demonstrably has records - even if the
-            # count API returned 0 or N/A (stale stats). Trust the activity probe in that case.
+            # count API returned 0 or N/A (stale stats, or skipped Virtual/Elastic). Trust the
+            # activity probe in that case.
             $hasActivityEvidence = ($null -ne $referenceDays)
 
-            if ($status -ne "Success" -and -not $hasActivityEvidence) {
+            if ($status -like 'Skipped*' -and -not $hasActivityEvidence) {
+                $usageBucket = "Unsupported"
+            }
+            elseif ($status -ne "Success" -and $status -notlike 'Skipped*' -and -not $hasActivityEvidence) {
                 $usageBucket = "Unknown"
             }
             elseif (-not $hasActivityEvidence -and ($recordCount -eq 0 -or $recordCount -eq "N/A")) {
@@ -565,6 +616,7 @@ function Get-RecordCounts {
             SchemaName       = $schemaName
             EntitySetName    = $entitySetName
             IsCustomEntity   = $isCustomEntity
+            TableType        = $tableType
             RecordCount      = $recordCount
             Status           = $status
         }
@@ -595,18 +647,22 @@ try {
     }
 
     # Get record counts for all tables using RetrieveTotalRecordCount
-    $results = Get-RecordCounts -OrgUrl $OrganizationUrl -Headers $headers -TableList $tablesToQuery -BatchSize $BatchSize -IncludeLastActivity:$IncludeLastActivity -ActivityFallback:$ActivityFallback
+    $results = Get-RecordCounts -OrgUrl $OrganizationUrl -Headers $headers -TableList $tablesToQuery -BatchSize $BatchSize -IncludeLastActivity:$IncludeLastActivity -ActivityFallback:$ActivityFallback -SkipUnsupportedTypes:(-not $IncludeUnsupportedTypes)
 
     # Calculate summary statistics
     $successfulResults = $results | Where-Object { $_.Status -eq "Success" }
     $notReturnedTables = $results | Where-Object { $_.Status -eq "Not Returned by API" }
-    $errorTables = $results | Where-Object { $_.Status -eq "Error" }
-    $totalRecords = ($successfulResults | Measure-Object -Property RecordCount -Sum).Sum
-    $tablesWithData = ($successfulResults | Where-Object { $_.RecordCount -gt 0 }).Count
+    $errorTables       = $results | Where-Object { $_.Status -eq "Error" }
+    $skippedResults    = $results | Where-Object { $_.Status -like 'Skipped*' }
+    $totalRecords      = ($successfulResults | Measure-Object -Property RecordCount -Sum).Sum
+    $tablesWithData    = ($successfulResults | Where-Object { $_.RecordCount -gt 0 }).Count
 
     Write-Host "`n=== Summary ===" -ForegroundColor Green
     Write-Host "Total tables queried: $($results.Count)"
     Write-Host "Tables with counts returned: $($successfulResults.Count)" -ForegroundColor Green
+    if ($skippedResults.Count -gt 0) {
+        Write-Host "Tables skipped (Virtual/Elastic): $($skippedResults.Count)" -ForegroundColor Yellow
+    }
     if ($notReturnedTables.Count -gt 0) {
         Write-Host "Tables not returned by API (virtual/unsupported): $($notReturnedTables.Count)" -ForegroundColor Yellow
     }

@@ -53,6 +53,10 @@
     where the count API can return stale 0 values. Adds API calls for every empty/unavailable
     table, so it can significantly increase runtime in environments with many empty tables.
 
+.PARAMETER IncludeUnsupportedTypes
+    By default, Virtual and Elastic tables are pre-skipped (RetrieveTotalRecordCount does not
+    support them). Set this switch to attempt them anyway.
+
 .NOTES
     Output always includes SchemaName, EntitySetName, and IsCustomEntity from table metadata.
     When a batch count call fails (one bad apple in the batch), the script automatically retries
@@ -118,7 +122,10 @@ param (
     [switch]$IncludeLastActivity,
 
     [Parameter(Mandatory = $false)]
-    [switch]$ActivityFallback
+    [switch]$ActivityFallback,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeUnsupportedTypes
 )
 
 # Get the access token using device code flow
@@ -167,6 +174,10 @@ if ($IncludeLastActivity) {
 
 if ($ActivityFallback) {
     $scriptParams.ActivityFallback = $true
+}
+
+if ($IncludeUnsupportedTypes) {
+    $scriptParams.IncludeUnsupportedTypes = $true
 }
 
 # Get record counts
