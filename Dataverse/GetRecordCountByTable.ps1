@@ -484,7 +484,9 @@ function Get-RecordCounts {
 
     # Build results
     $results = @()
-    $now = Get-Date
+    # Use UTC for the "now" baseline because Dataverse returns CreatedOn/ModifiedOn in UTC.
+    # Comparing in UTC avoids timezone drift that can produce slightly-negative deltas.
+    $now = (Get-Date).ToUniversalTime()
     foreach ($logicalName in $allLogicalNames) {
         $displayName    = $displayNameMap[$logicalName]
         $schemaName     = $schemaNameMap[$logicalName]
@@ -519,8 +521,10 @@ function Get-RecordCounts {
         $daysSinceLastModified = $null
         $usageBucket           = $null
         if ($IncludeLastActivity) {
-            if ($lastCreated)  { $daysSinceLastCreated  = [int]([math]::Floor(($now - [datetime]$lastCreated).TotalDays))  }
-            if ($lastModified) { $daysSinceLastModified = [int]([math]::Floor(($now - [datetime]$lastModified).TotalDays)) }
+            # Compare in UTC: Dataverse returns timestamps in UTC, $now is also UTC above.
+            # Clamp to 0 as a safety net (a record can't legitimately be modified in the future).
+            if ($lastCreated)  { $daysSinceLastCreated  = [math]::Max(0, [int]([math]::Floor(($now - ([datetime]$lastCreated).ToUniversalTime()).TotalDays)))  }
+            if ($lastModified) { $daysSinceLastModified = [math]::Max(0, [int]([math]::Floor(($now - ([datetime]$lastModified).ToUniversalTime()).TotalDays))) }
 
             # UsageBucket is based primarily on most recent activity (modified, falling back to created)
             $referenceDays = if ($null -ne $daysSinceLastModified) { $daysSinceLastModified }
