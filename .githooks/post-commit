@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# Auto-zip the repo after every commit so it's ready to copy to disconnected systems.
+# Skips during rebases / cherry-picks / merges to avoid noise.
+
+if [ -d "$(git rev-parse --git-dir)/rebase-merge" ] || \
+   [ -d "$(git rev-parse --git-dir)/rebase-apply" ] || \
+   [ -f "$(git rev-parse --git-dir)/MERGE_HEAD" ] || \
+   [ -f "$(git rev-parse --git-dir)/CHERRY_PICK_HEAD" ]; then
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Run the PowerShell zip script (try pwsh first, fall back to Windows PowerShell)
+if command -v pwsh >/dev/null 2>&1; then
+    pwsh -NoProfile -ExecutionPolicy Bypass -File "$REPO_ROOT/.githooks/Build-Zip.ps1"
+elif command -v powershell >/dev/null 2>&1; then
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$REPO_ROOT/.githooks/Build-Zip.ps1"
+else
+    echo "post-commit: neither pwsh nor powershell found on PATH; skipping zip." >&2
+fi

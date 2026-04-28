@@ -29,8 +29,30 @@
 .PARAMETER OutputFormat
     The output format. Valid values are "Table", "CSV", "JSON". Default is "Table".
 
+.PARAMETER BatchSize
+    The number of tables to include per RetrieveTotalRecordCount API call.
+    Default is 50. Reduce if you encounter URL length issues.
+
 .PARAMETER OutputPath
     Optional file path to export the results.
+
+.PARAMETER IncludeLastActivity
+    When specified, retrieves the last CreatedOn, last ModifiedOn, and oldest CreatedOn timestamps
+    for each table, plus computed DaysSinceLastCreated, DaysSinceLastModified, and a UsageBucket
+    classification (Empty / Active / Dormant / Stale / Unknown). Useful for identifying
+    tables/capabilities that are no longer in active use. Adds three extra API calls per table
+    with records, so it can significantly increase runtime.
+
+.PARAMETER ActivityFallback
+    Only meaningful with -IncludeLastActivity. When set, also runs the activity timestamp queries
+    against tables whose RecordCount came back as 0 or N/A. Useful on test/sandbox environments
+    where the count API can return stale 0 values. Adds API calls for every empty/unavailable
+    table, so it can significantly increase runtime in environments with many empty tables.
+
+.NOTES
+    Output always includes SchemaName, EntitySetName, and IsCustomEntity from table metadata.
+    When a batch count call fails (one bad apple in the batch), the script automatically retries
+    each table individually so the rest still get counts.
 
 .EXAMPLE
     .\GetRecordCountByTableWithAuth.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -OrganizationUrl "https://your-org.crm.dynamics.com" -Tables @("account", "contact")
@@ -46,6 +68,12 @@
     .\GetRecordCountByTableWithAuth.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -OrganizationUrl "https://your-org.crm.dynamics.com" -Environment "GCCH"
 
     Gets record counts in a GCC High environment.
+
+.EXAMPLE
+    .\GetRecordCountByTableWithAuth.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -OrganizationUrl "https://your-org.crm.dynamics.com" -IncludeLastActivity -OutputFormat CSV -OutputPath "C:\temp\counts.csv"
+
+    Gets record counts plus the last CreatedOn/ModifiedOn timestamps for each table
+    to help identify unused tables.
 #>
 
 param (
@@ -67,13 +95,23 @@ param (
     
     [Parameter(Mandatory = $false)]
     [switch]$IncludeSystemTables = $false,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateRange(1, 200)]
+    [int]$BatchSize = 50,
     
     [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]
     [string]$OutputFormat = "Table",
     
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$IncludeLastActivity,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ActivityFallback
 )
 
 # Get the access token using device code flow
@@ -104,8 +142,20 @@ if ($IncludeSystemTables) {
     $scriptParams.IncludeSystemTables = $true
 }
 
+if ($BatchSize -ne 50) {
+    $scriptParams.BatchSize = $BatchSize
+}
+
 if ($OutputPath) {
     $scriptParams.OutputPath = $OutputPath
+}
+
+if ($IncludeLastActivity) {
+    $scriptParams.IncludeLastActivity = $true
+}
+
+if ($ActivityFallback) {
+    $scriptParams.ActivityFallback = $true
 }
 
 # Get record counts
