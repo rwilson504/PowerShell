@@ -36,7 +36,9 @@
 
 .PARAMETER BatchSize
     The number of tables to include per RetrieveTotalRecordCount API call.
-    Default is 50. Reduce if you encounter URL length issues.
+    Default is 20. Lower values reduce the chance of a single unsupported table
+    (virtual/elastic/preview entity) poisoning the whole batch and forcing per-table retries;
+    higher values reduce total request count when most tables are supported.
 
 .PARAMETER OutputFormat
     The output format. Valid values are "Table", "CSV", "JSON". Default is "Table".
@@ -113,7 +115,7 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 200)]
-    [int]$BatchSize = 50,
+    [int]$BatchSize = 20,
     
     [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]

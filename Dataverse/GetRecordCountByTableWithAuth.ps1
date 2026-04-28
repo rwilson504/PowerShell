@@ -35,7 +35,7 @@
 
 .PARAMETER BatchSize
     The number of tables to include per RetrieveTotalRecordCount API call.
-    Default is 50. Reduce if you encounter URL length issues.
+    Default is 20. Reduce if you encounter URL length issues.
 
 .PARAMETER OutputPath
     Optional file path to export the results.
@@ -105,7 +105,7 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(1, 200)]
-    [int]$BatchSize = 50,
+    [int]$BatchSize = 20,
     
     [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]
@@ -153,7 +153,7 @@ if ($CustomEntitiesOnly) {
     $scriptParams.CustomEntitiesOnly = $true
 }
 
-if ($BatchSize -ne 50) {
+if ($BatchSize -ne 20) {
     $scriptParams.BatchSize = $BatchSize
 }
 
