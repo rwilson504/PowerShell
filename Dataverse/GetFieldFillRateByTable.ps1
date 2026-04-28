@@ -94,6 +94,30 @@
     .\GetFieldFillRateByTable.ps1 -OrganizationUrl "https://your-org.crm.dynamics.com" -AccessToken $token -Tables "account" -Filter "statecode eq 0"
 
     Reports fill rates restricted to active accounts only.
+
+.NOTES
+    CORRELATING WITH GetTableRelationships OUTPUT (finding unused lookups)
+
+    The output is designed to be cross-referenced with the relationships_*.csv produced by
+    GetTableRelationships.ps1, so you can identify lookup columns that exist in the schema
+    but are never populated. Both CSVs share the same join keys.
+
+    Join key (relationship row's child side):
+      attributeusage_*.csv:  TableLogicalName + AttributeLogicalName
+      relationships_*.csv :  TableLogicalName + LookupAttribute   (when RelationshipType = 'N:1')
+
+    The attributeusage CSV also includes a LookupTargets column (semicolon-separated list of
+    target table logical names) populated for every Lookup-type attribute. This lets you filter
+    the report on its own without needing the relationships file - for example, all unused
+    lookups that point to the contact table.
+
+    Example Excel formula to attach the relationship schema name to each lookup attribute row:
+      =VLOOKUP(A2&"|"&D2,
+               'relationships'!$A:$F,    'TableLogicalName' col, 'LookupAttribute' col, etc.
+               6, FALSE)
+    where column A is TableLogicalName, D is AttributeLogicalName in the attribute usage sheet.
+
+    Power BI / pandas users: just merge on the same composite key.
 #>
 
 param (
@@ -210,7 +234,8 @@ function Get-TableAttributes {
     .SYNOPSIS
         Returns the list of attribute metadata records for a table. Each item exposes
         LogicalName, SchemaName, DisplayName, AttributeType, IsCustomAttribute,
-        IsValidForRead, IsLogical, AttributeOf.
+        IsValidForRead, IsLogical, AttributeOf, and (for Lookup attributes) Targets - the
+        semicolon-separated list of target entity logical names the lookup can point to.
     #>
     param (
         [string]$OrgUrl,
@@ -239,10 +264,41 @@ function Get-TableAttributes {
                 IsValidForRead    = [bool]$attr.IsValidForRead
                 IsLogical         = [bool]$attr.IsLogical
                 AttributeOf       = $attr.AttributeOf
+                LookupTargets     = $null  # populated below for Lookup-type attributes
             }
         }
         $url = $resp.'@odata.nextLink'
     } while ($url)
+
+    # Lookup target tables are only exposed via the LookupAttributeMetadata cast, not the base
+    # AttributeMetadata. Issue a second metadata call to enrich Lookup rows with their Targets
+    # array. This is critical for correlating attribute fill data with the relationships report:
+    # a lookup with FillRatePercent=0 can be cross-referenced to the relationships table to find
+    # which N:1 / 1:N relationship is unused.
+    $lookupAttrs = $all | Where-Object { $_.AttributeType -eq 'Lookup' }
+    if ($lookupAttrs.Count -gt 0) {
+        $lookupUrl = "$OrgUrl/api/data/v9.2/EntityDefinitions(LogicalName='$LogicalName')/Attributes/Microsoft.Dynamics.CRM.LookupAttributeMetadata?" +
+            "`$select=LogicalName,Targets"
+        try {
+            $targetMap = @{}
+            do {
+                $tResp = Invoke-RestMethod -Uri $lookupUrl -Headers $Headers -Method Get
+                foreach ($t in $tResp.value) {
+                    $targetMap[$t.LogicalName] = ($t.Targets -join ';')
+                }
+                $lookupUrl = $tResp.'@odata.nextLink'
+            } while ($lookupUrl)
+
+            foreach ($attr in $lookupAttrs) {
+                if ($targetMap.ContainsKey($attr.LogicalName)) {
+                    $attr.LookupTargets = $targetMap[$attr.LogicalName]
+                }
+            }
+        }
+        catch {
+            Write-Warning "Failed to load Lookup targets for table '$LogicalName' (correlation column will be empty): $_"
+        }
+    }
 
     return $all
 }
@@ -460,6 +516,7 @@ try {
                     AttributeDisplayName = $attr.DisplayName
                     AttributeType        = $attr.AttributeType
                     IsCustomAttribute    = $attr.IsCustomAttribute
+                    LookupTargets        = $attr.LookupTargets
                     TotalRecords         = $totalCount
                     PopulatedCount       = 0
                     EmptyCount           = 0
@@ -541,6 +598,7 @@ try {
                         AttributeDisplayName = $attr.DisplayName
                         AttributeType        = $attr.AttributeType
                         IsCustomAttribute    = $attr.IsCustomAttribute
+                        LookupTargets        = $attr.LookupTargets
                         TotalRecords         = $totalCount
                         PopulatedCount       = if ($errored) { "N/A" } else { $populated }
                         EmptyCount           = if ($null -eq $emptyCount) { "N/A" } else { $emptyCount }
