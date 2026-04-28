@@ -43,7 +43,7 @@
 .PARAMETER IncludeLastActivity
     When specified, retrieves the last CreatedOn, last ModifiedOn, and oldest CreatedOn timestamps
     for each table, plus computed DaysSinceLastCreated, DaysSinceLastModified, and a UsageBucket
-    classification (Empty / Active / Dormant / Stale / Unknown). Useful for identifying
+    classification (Empty / Active (<=90d) / Dormant (91-365d) / Stale (>365d) / Unknown). Useful for identifying
     tables/capabilities that are no longer in active use. Adds three extra API calls per table
     with records, so it can significantly increase runtime.
 

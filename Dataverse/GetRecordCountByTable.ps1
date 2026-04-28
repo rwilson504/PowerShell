@@ -53,7 +53,7 @@
     When enabled, the output also includes computed columns:
       - DaysSinceLastCreated  : Whole days since the most recently created record
       - DaysSinceLastModified : Whole days since the most recently modified record
-      - UsageBucket           : One of Empty / Active (<=90d) / Dormant (<=365d) / Stale (>365d) / Unknown
+      - UsageBucket           : One of Empty / Active (<=90d) / Dormant (91-365d) / Stale (>365d) / Unknown
 
     Useful for identifying tables/capabilities that are no longer in active use.
 
@@ -546,13 +546,13 @@ function Get-RecordCounts {
                 $usageBucket = "Unknown"
             }
             elseif ($referenceDays -le 90) {
-                $usageBucket = "Active"
+                $usageBucket = "Active (<=90d)"
             }
             elseif ($referenceDays -le 365) {
-                $usageBucket = "Dormant"
+                $usageBucket = "Dormant (91-365d)"
             }
             else {
-                $usageBucket = "Stale"
+                $usageBucket = "Stale (>365d)"
             }
         }
 
