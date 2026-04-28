@@ -28,6 +28,12 @@
     When querying all tables, include system tables (those starting with 'sys').
     Default is $false.
 
+.PARAMETER CustomEntitiesOnly
+    When querying all tables (no -Tables parameter), restrict the result to custom entities
+    (IsCustomEntity eq true). System/Microsoft tables are excluded. Useful for auditing
+    custom-built capabilities without the noise of out-of-the-box tables. Has no effect when
+    -Tables is specified - explicit table lists are always honored as-is.
+
 .PARAMETER BatchSize
     The number of tables to include per RetrieveTotalRecordCount API call.
     Default is 50. Reduce if you encounter URL length issues.
@@ -103,6 +109,9 @@ param (
     [switch]$IncludeSystemTables = $false,
 
     [Parameter(Mandatory = $false)]
+    [switch]$CustomEntitiesOnly,
+
+    [Parameter(Mandatory = $false)]
     [ValidateRange(1, 200)]
     [int]$BatchSize = 50,
     
@@ -141,15 +150,20 @@ function Get-AllReadableTables {
     param (
         [string]$OrgUrl,
         [hashtable]$Headers,
-        [bool]$IncludeSystem
+        [bool]$IncludeSystem,
+        [bool]$CustomOnly
     )
 
     Write-Host "Retrieving metadata for all tables..." -ForegroundColor Cyan
     
     # Query EntityDefinitions to get all entities that are valid for read operations
+    $filter = "IsValidForAdvancedFind eq true and IsIntersect eq false"
+    if ($CustomOnly) {
+        $filter += " and IsCustomEntity eq true"
+    }
     $metadataUrl = "$OrgUrl/api/data/v9.2/EntityDefinitions?" + 
         "`$select=LogicalName,SchemaName,EntitySetName,DisplayName,IsCustomEntity,IsValidForAdvancedFind" +
-        "&`$filter=IsValidForAdvancedFind eq true and IsIntersect eq false"
+        "&`$filter=$filter"
     
     try {
         $response = Invoke-RestMethod -Uri $metadataUrl -Headers $Headers -Method Get
@@ -571,7 +585,7 @@ try {
     }
     else {
         # Get all readable tables from metadata
-        $tablesToQuery = Get-AllReadableTables -OrgUrl $OrganizationUrl -Headers $headers -IncludeSystem $IncludeSystemTables
+        $tablesToQuery = Get-AllReadableTables -OrgUrl $OrganizationUrl -Headers $headers -IncludeSystem $IncludeSystemTables -CustomOnly $CustomEntitiesOnly
     }
 
     # Get record counts for all tables using RetrieveTotalRecordCount

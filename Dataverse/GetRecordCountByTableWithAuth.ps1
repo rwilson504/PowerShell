@@ -26,6 +26,10 @@
     When querying all tables, include system tables (those starting with 'sys').
     Default is $false.
 
+.PARAMETER CustomEntitiesOnly
+    When querying all tables (no -Tables parameter), restrict the result to custom entities only.
+    Useful for auditing custom-built capabilities without out-of-the-box noise.
+
 .PARAMETER OutputFormat
     The output format. Valid values are "Table", "CSV", "JSON". Default is "Table".
 
@@ -97,6 +101,9 @@ param (
     [switch]$IncludeSystemTables = $false,
 
     [Parameter(Mandatory = $false)]
+    [switch]$CustomEntitiesOnly,
+
+    [Parameter(Mandatory = $false)]
     [ValidateRange(1, 200)]
     [int]$BatchSize = 50,
     
@@ -140,6 +147,10 @@ if ($Tables -and $Tables.Count -gt 0) {
 
 if ($IncludeSystemTables) {
     $scriptParams.IncludeSystemTables = $true
+}
+
+if ($CustomEntitiesOnly) {
+    $scriptParams.CustomEntitiesOnly = $true
 }
 
 if ($BatchSize -ne 50) {
