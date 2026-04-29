@@ -80,6 +80,9 @@ param (
     [string[]]$UserLookupAttributes,
 
     [Parameter(Mandatory = $false)]
+    [string[]]$UserTargetTables = @('systemuser'),
+
+    [Parameter(Mandatory = $false)]
     [switch]$AutoDetectUserLookups,
 
     [Parameter(Mandatory = $false)]
@@ -119,6 +122,9 @@ $scriptParams = @{
 }
 if ($Tables -and $Tables.Count -gt 0)                             { $scriptParams.Tables               = $Tables }
 if ($SolutionUniqueName)                                          { $scriptParams.SolutionUniqueName   = $SolutionUniqueName }
+if ($UserTargetTables -and ($UserTargetTables.Count -gt 1 -or $UserTargetTables[0] -ne 'systemuser')) {
+    $scriptParams.UserTargetTables = $UserTargetTables
+}
 
 if ($UserLookupAttributes -and $UserLookupAttributes.Count -gt 0) { $scriptParams.UserLookupAttributes        = $UserLookupAttributes }
 if ($AutoDetectUserLookups)                                       { $scriptParams.AutoDetectUserLookups       = $true }

@@ -36,14 +36,24 @@
 
 .PARAMETER UserLookupAttributes
     Optional. Additional lookup attribute logical names (beyond the standard four) to include.
-    These must be Lookup-type columns whose Targets include 'systemuser' (e.g., approver,
-    reviewer, msf_assignedreviewer). The script verifies each from metadata and warns/skips
-    any that don't match.
+    These must be Lookup-type columns whose Targets include any of the -UserTargetTables
+    (default: systemuser). The script verifies each from metadata and warns/skips any that
+    don't match.
+
+.PARAMETER UserTargetTables
+    Which target table types qualify as 'user lookups'. Default is @('systemuser'). Add
+    'contact' to also pick up customer-contact lookups, 'account' for org lookups, or
+    any custom person table. The standard four audit columns (createdby, modifiedby, etc.)
+    are always systemuser-targeted, so they're always included regardless of this list
+    unless -ExcludeStandardUserAttributes is set.
+
+    Example: -UserTargetTables 'systemuser','contact'  (covers internal users + portal
+    contacts in the same report).
 
 .PARAMETER AutoDetectUserLookups
     When set, the script auto-discovers EVERY Lookup attribute on each table whose Targets
-    include 'systemuser' and includes them all. Equivalent to listing them all manually under
-    -UserLookupAttributes; saves you from having to know your custom-lookup names ahead of time.
+    include any of the -UserTargetTables and includes them all. Saves you from having to
+    know your custom-lookup names ahead of time.
 
 .PARAMETER ExcludeStandardUserAttributes
     Skip the four standard audit lookups (createdby, createdonbehalfby, modifiedby,
@@ -123,6 +133,9 @@ param (
     [string[]]$UserLookupAttributes,
 
     [Parameter(Mandatory = $false)]
+    [string[]]$UserTargetTables = @('systemuser'),
+
+    [Parameter(Mandatory = $false)]
     [switch]$AutoDetectUserLookups,
 
     [Parameter(Mandatory = $false)]
@@ -181,10 +194,16 @@ function Get-EntityMetadata {
 function Get-SystemUserLookups {
     <#
     .SYNOPSIS
-        Returns all Lookup attributes on the table whose Targets include 'systemuser'.
-        Each item exposes LogicalName, SchemaName, DisplayName, Targets, IsCustomAttribute.
+        Returns all Lookup attributes on the table whose Targets include any of the supplied
+        target tables (default: systemuser). Each item exposes LogicalName, SchemaName,
+        DisplayName, Targets, IsCustomAttribute.
     #>
-    param ([string]$OrgUrl, [hashtable]$Headers, [string]$LogicalName)
+    param ([string]$OrgUrl, [hashtable]$Headers, [string]$LogicalName, [string[]]$TargetTables = @('systemuser'))
+
+    # Normalize target list for case-insensitive matching
+    $targetSet = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@($TargetTables | ForEach-Object { $_.ToLowerInvariant() }),
+        [System.StringComparer]::OrdinalIgnoreCase)
 
     # Step 1: pull base attribute metadata so we can grab DisplayName, IsCustomAttribute
     $baseAttrUrl = "$OrgUrl/api/data/v9.2/EntityDefinitions(LogicalName='$LogicalName')/Attributes?" +
@@ -220,7 +239,9 @@ function Get-SystemUserLookups {
         do {
             $resp = Invoke-RestMethod -Uri $lookupUrl -Headers $Headers -Method Get
             foreach ($a in $resp.value) {
-                if ($a.Targets -contains 'systemuser') {
+                # Match if any of this lookup's Targets is in the requested set
+                $matchedTargets = @($a.Targets | Where-Object { $targetSet.Contains($_) })
+                if ($matchedTargets.Count -gt 0) {
                     $base = $baseMap[$a.LogicalName]
                     if ($base -and -not $base.IsLogical -and -not $base.AttributeOf) {
                         $userLookups += [PSCustomObject]@{
@@ -301,20 +322,23 @@ function Invoke-FetchXmlAggregate {
     foreach ($g in $resp.value) {
         $userId   = $g.$alias
         $userName = $g."$alias@OData.Community.Display.V1.FormattedValue"
+        $targetEntity = $g."$alias@Microsoft.Dynamics.CRM.lookuplogicalname"   # null when group is null
         $count    = [long]$g.$cntAlias
         if ([string]::IsNullOrWhiteSpace($userId)) {
             # Null / not-set bucket - represents records where this user lookup was empty
             $rows.Add([PSCustomObject]@{
-                UserId   = ''
-                UserName = '(no value)'
-                Count    = $count
+                UserId       = ''
+                UserName     = '(no value)'
+                TargetEntity = ''
+                Count        = $count
             }) | Out-Null
         }
         else {
             $rows.Add([PSCustomObject]@{
-                UserId   = $userId
-                UserName = if ($userName) { $userName } else { $userId }
-                Count    = $count
+                UserId       = $userId
+                UserName     = if ($userName) { $userName } else { $userId }
+                TargetEntity = $targetEntity
+                Count        = $count
             }) | Out-Null
         }
     }
@@ -356,40 +380,82 @@ function ConvertTo-FetchXmlFilter {
 function Get-UserDirectory {
     <#
     .SYNOPSIS
-        Looks up domainname / isdisabled / accessmode for the supplied systemuser GUIDs and
-        returns @{ guid -> @{ DomainName; IsDisabled; AccessMode; IsServiceAccount } }.
+        Looks up display info for the supplied user-record GUIDs across one or more target
+        tables (systemuser, contact, account, etc.) and returns
+        @{ "<targetEntity>|<guid>" -> @{ DisplayName; DomainName; IsDisabled; IsServiceAccount } }.
+        For non-systemuser tables IsDisabled / IsServiceAccount are best-effort and may be empty.
     #>
-    param ([string]$OrgUrl, [hashtable]$Headers, [string[]]$UserIds)
+    param ([string]$OrgUrl, [hashtable]$Headers, [hashtable]$UserIdsByTarget)
     $map = @{}
-    if (-not $UserIds -or $UserIds.Count -eq 0) { return $map }
+    if (-not $UserIdsByTarget -or $UserIdsByTarget.Count -eq 0) { return $map }
 
-    $unique = $UserIds | Where-Object { $_ } | Select-Object -Unique
-    if ($unique.Count -eq 0) { return $map }
+    foreach ($target in $UserIdsByTarget.Keys) {
+        $ids = $UserIdsByTarget[$target] | Where-Object { $_ } | Select-Object -Unique
+        if ($ids.Count -eq 0) { continue }
 
-    $chunkSize = 25
-    $totalChunks = [math]::Ceiling($unique.Count / $chunkSize)
-    for ($i = 0; $i -lt $totalChunks; $i++) {
-        $start = $i * $chunkSize
-        $end   = [math]::Min($start + $chunkSize - 1, $unique.Count - 1)
-        $chunk = $unique[$start..$end]
-        $filter = ($chunk | ForEach-Object { "systemuserid eq $_" }) -join ' or '
-        $url = "$OrgUrl/api/data/v9.2/systemusers?" +
-            "`$select=systemuserid,fullname,domainname,isdisabled,accessmode" +
-            "&`$filter=$filter"
-        try {
-            $r = Invoke-RestMethod -Uri $url -Headers $Headers -Method Get
-            foreach ($u in $r.value) {
-                $map[$u.systemuserid] = [PSCustomObject]@{
-                    FullName         = $u.fullname
-                    DomainName       = $u.domainname
-                    IsDisabled       = [bool]$u.isdisabled
-                    AccessMode       = [int]$u.accessmode
-                    IsServiceAccount = ([int]$u.accessmode -eq 4)  # 4 = Non-interactive
-                }
+        # Determine the entity-set name + the relevant select columns for this target type.
+        switch ($target) {
+            'systemuser' {
+                $entitySet = 'systemusers'
+                $idCol     = 'systemuserid'
+                $selectCols = 'systemuserid,fullname,domainname,isdisabled,accessmode'
+            }
+            'contact' {
+                $entitySet  = 'contacts'
+                $idCol      = 'contactid'
+                $selectCols = 'contactid,fullname,emailaddress1,statecode'
+            }
+            'account' {
+                $entitySet  = 'accounts'
+                $idCol      = 'accountid'
+                $selectCols = 'accountid,name,emailaddress1,statecode'
+            }
+            default {
+                # Fall back to plural-by-+s convention; user can override behavior by editing
+                # this switch if their custom person table doesn't follow that convention.
+                $entitySet  = $target + 's'
+                $idCol      = $target + 'id'
+                $selectCols = $idCol
             }
         }
-        catch {
-            Write-Warning "User directory lookup failed for chunk $($i + 1) of $totalChunks : $_"
+
+        $chunkSize = 25
+        $totalChunks = [math]::Ceiling($ids.Count / $chunkSize)
+        for ($i = 0; $i -lt $totalChunks; $i++) {
+            $start = $i * $chunkSize
+            $end   = [math]::Min($start + $chunkSize - 1, $ids.Count - 1)
+            $chunk = $ids[$start..$end]
+            $filter = ($chunk | ForEach-Object { "$idCol eq $_" }) -join ' or '
+            $url = "$OrgUrl/api/data/v9.2/$entitySet`?`$select=$selectCols&`$filter=$filter"
+            try {
+                $r = Invoke-RestMethod -Uri $url -Headers $Headers -Method Get
+                foreach ($u in $r.value) {
+                    $id = $u.$idCol
+                    $display = $null
+                    if ($u.PSObject.Properties['fullname'] -and $u.fullname) { $display = $u.fullname }
+                    elseif ($u.PSObject.Properties['name'] -and $u.name)     { $display = $u.name }
+                    $domainOrEmail = $null
+                    if ($u.PSObject.Properties['domainname'] -and $u.domainname)       { $domainOrEmail = $u.domainname }
+                    elseif ($u.PSObject.Properties['emailaddress1'] -and $u.emailaddress1) { $domainOrEmail = $u.emailaddress1 }
+                    $isDisabled = $null
+                    if ($u.PSObject.Properties['isdisabled'])  { $isDisabled = [bool]$u.isdisabled }
+                    elseif ($u.PSObject.Properties['statecode']) { $isDisabled = ([int]$u.statecode -ne 0) }
+                    $isService = $false
+                    if ($target -eq 'systemuser' -and $u.PSObject.Properties['accessmode']) {
+                        $isService = ([int]$u.accessmode -eq 4)
+                    }
+                    $map["$target|$id"] = [PSCustomObject]@{
+                        TargetEntity     = $target
+                        DisplayName      = $display
+                        DomainName       = $domainOrEmail
+                        IsDisabled       = $isDisabled
+                        IsServiceAccount = $isService
+                    }
+                }
+            }
+            catch {
+                Write-Warning "User directory lookup failed for $target chunk $($i + 1) of $totalChunks : $_"
+            }
         }
     }
     return $map
@@ -420,8 +486,8 @@ try {
             continue
         }
 
-        $userLookups = Get-SystemUserLookups -OrgUrl $OrganizationUrl -Headers $headers -LogicalName $logicalName
-        Write-Host "  systemuser-targeted lookups available: $($userLookups.Count)" -ForegroundColor Gray
+        $userLookups = Get-SystemUserLookups -OrgUrl $OrganizationUrl -Headers $headers -LogicalName $logicalName -TargetTables $UserTargetTables
+        Write-Host "  user-targeted lookups available (targets: $($UserTargetTables -join ', ')): $($userLookups.Count)" -ForegroundColor Gray
 
         # Decide which attributes to query
         $selected = New-Object System.Collections.Generic.List[object]
@@ -446,7 +512,7 @@ try {
                     if (-not $selected.Contains($availableMap[$a])) { $selected.Add($availableMap[$a]) | Out-Null }
                 }
                 else {
-                    Write-Warning "  Requested user-lookup '$a' is not a systemuser-targeted Lookup on $logicalName - skipping."
+                    Write-Warning "  Requested user-lookup '$a' is not a Lookup on $logicalName whose Targets include any of: $($UserTargetTables -join ', ') - skipping."
                 }
             }
         }
@@ -460,8 +526,8 @@ try {
 
         # Run aggregate per attribute
         $idx = 0
-        $allUserIds = New-Object System.Collections.Generic.List[string]
-        $perAttrRows = @{}  # attrName -> @(rows)
+        $idsByTarget = @{}   # targetEntity -> List[guid]
+        $perAttrRows = @{}
         $perAttrStatus = @{}
         foreach ($attr in $selected) {
             $idx++
@@ -478,13 +544,19 @@ try {
             $perAttrStatus[$attr.LogicalName] = $result.Status
             $perAttrRows[$attr.LogicalName]   = $result.Rows
             foreach ($r in $result.Rows) {
-                if ($r.UserId) { $allUserIds.Add($r.UserId) | Out-Null }
+                if ($r.UserId -and $r.TargetEntity) {
+                    if (-not $idsByTarget.ContainsKey($r.TargetEntity)) {
+                        $idsByTarget[$r.TargetEntity] = New-Object System.Collections.Generic.List[string]
+                    }
+                    $idsByTarget[$r.TargetEntity].Add($r.UserId) | Out-Null
+                }
             }
         }
         Write-Progress -Activity "User activity: $logicalName" -Completed
 
-        Write-Host "  Looking up user directory data for $($allUserIds.Count) total user references..." -ForegroundColor Gray
-        $userDir = Get-UserDirectory -OrgUrl $OrganizationUrl -Headers $headers -UserIds $allUserIds.ToArray()
+        $totalIdRefs = ($idsByTarget.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
+        Write-Host "  Looking up directory data for $totalIdRefs total user-record reference(s) across $($idsByTarget.Count) target table(s)..." -ForegroundColor Gray
+        $userDir = Get-UserDirectory -OrgUrl $OrganizationUrl -Headers $headers -UserIdsByTarget $idsByTarget
 
         # Emit output rows
         foreach ($attr in $selected) {
@@ -502,6 +574,7 @@ try {
                     AttributeType        = 'Lookup'
                     IsCustomAttribute    = $attr.IsCustomAttribute
                     LookupTargets        = $attr.Targets
+                    UserTargetEntity     = ''
                     UserId               = ''
                     UserDisplayName      = ''
                     UserDomainName       = ''
@@ -525,7 +598,11 @@ try {
             $rank = 0
             foreach ($r in $sorted) {
                 $rank++
-                $u = if ($r.UserId -and $userDir.ContainsKey($r.UserId)) { $userDir[$r.UserId] } else { $null }
+                $u = $null
+                if ($r.UserId -and $r.TargetEntity) {
+                    $dirKey = "$($r.TargetEntity)|$($r.UserId)"
+                    if ($userDir.ContainsKey($dirKey)) { $u = $userDir[$dirKey] }
+                }
                 $allResults.Add([PSCustomObject][ordered]@{
                     TableLogicalName     = $logicalName
                     TableDisplayName     = $meta.DisplayName
@@ -536,6 +613,7 @@ try {
                     AttributeType        = 'Lookup'
                     IsCustomAttribute    = $attr.IsCustomAttribute
                     LookupTargets        = $attr.Targets
+                    UserTargetEntity     = $r.TargetEntity
                     UserId               = $r.UserId
                     UserDisplayName      = $r.UserName
                     UserDomainName       = if ($u) { $u.DomainName } else { '' }
