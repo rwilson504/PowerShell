@@ -119,7 +119,7 @@ param (
 # Get the access token using device code flow
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
 $scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$authScript  = Join-Path $scriptDir "..\EntraID\GetAccessTokenDeviceCode.ps1"
+$authScript  = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
 $accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
 
 if (-not $accessToken) {

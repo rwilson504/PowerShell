@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-    Acquires an access token via device code flow and reports table-level usage activity
-    (newest record, distinct creators/owners, records-created trend buckets).
+    Acquires an access token via device code flow and reports per-attribute UI presence
+    (forms, views, charts) for one or more Dataverse tables.
 
 .PARAMETER TenantId
     The Azure AD tenant ID.
@@ -13,13 +13,15 @@
     The Dataverse organization URL.
 .PARAMETER Tables
     Required. One or more table logical names.
+.PARAMETER IncludeUserQueries
+    Also scan personal views (userquery).
 .PARAMETER OutputFormat
     "Table" / "CSV" / "JSON". Default "Table".
 .PARAMETER OutputPath
     Optional output file path.
 
 .EXAMPLE
-    .\GetTableUsageActivityWithAuth.ps1 -TenantId "..." -ClientId "..." -OrganizationUrl "https://your-org.crm.dynamics.com" -Tables "account","msf_program","msf_contract" -OutputFormat CSV
+    .\GetFieldUIPresenceWithAuth.ps1 -TenantId "..." -ClientId "..." -OrganizationUrl "https://your-org.crm.dynamics.com" -Tables "msf_program" -OutputFormat CSV
 #>
 
 param (
@@ -29,13 +31,14 @@ param (
     [Parameter(Mandatory = $true)] [string]$OrganizationUrl,
     [Parameter(Mandatory = $false)] [string[]]$Tables,
     [Parameter(Mandatory = $false)] [string]$SolutionUniqueName,
+    [Parameter(Mandatory = $false)] [switch]$IncludeUserQueries,
     [Parameter(Mandatory = $false)] [ValidateSet("Table", "CSV", "JSON")] [string]$OutputFormat = "Table",
     [Parameter(Mandatory = $false)] [string]$OutputPath
 )
 
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
 $scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
-$authScript  = Join-Path $scriptDir "..\EntraID\GetAccessTokenDeviceCode.ps1"
+$authScript  = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
 $accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
 
 if (-not $accessToken) { Write-Error "Failed to acquire access token."; exit 1 }
@@ -48,8 +51,9 @@ $scriptParams = @{
 }
 if ($Tables -and $Tables.Count -gt 0) { $scriptParams.Tables             = $Tables }
 if ($SolutionUniqueName)              { $scriptParams.SolutionUniqueName = $SolutionUniqueName }
-if ($OutputPath) { $scriptParams.OutputPath = $OutputPath }
+if ($IncludeUserQueries) { $scriptParams.IncludeUserQueries = $true }
+if ($OutputPath)         { $scriptParams.OutputPath         = $OutputPath }
 
-$mainScript = Join-Path $scriptDir "GetTableUsageActivity.ps1"
+$mainScript = Join-Path $scriptDir "GetFieldUIPresence.ps1"
 $results = & $mainScript @scriptParams
 return $results
