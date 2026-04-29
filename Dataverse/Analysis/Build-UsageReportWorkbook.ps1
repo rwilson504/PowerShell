@@ -408,16 +408,17 @@ if ($CombineToXlsx) {
     }
 
     if ($excel) {
+        $previousSheetsInNewWorkbook = $excel.SheetsInNewWorkbook
         $excel.Visible       = $false
         $excel.DisplayAlerts = $false
         $excel.ScreenUpdating = $false
 
         try {
             # Sheet build order: README first, then computed joins, then raw CSVs.
-            # Use a typed list (not [Object[]] += hashtable) because PowerShell 7 prefers
-            # hashtable's op_Addition (merge) over array growth when the RHS is a hashtable,
-            # which throws "does not contain a method named 'op_Addition'".
-            $sheetSpecs = New-Object System.Collections.Generic.List[hashtable]
+            # Plain [object[]] would force us to use += which can mis-fire as op_Addition
+            # against a hashtable; ArrayList.Add returns an int (still fine) and avoids
+            # generic-type-literal parsing quirks in PS 7.
+            $sheetSpecs = New-Object System.Collections.ArrayList
             [void]$sheetSpecs.Add(@{ Name='README';     File=$readmePath;     IsMarkdown=$true })
             [void]$sheetSpecs.Add(@{ Name='Master';     File=$masterPath;     IsMarkdown=$false })
             [void]$sheetSpecs.Add(@{ Name='Tables';     File=$tablesPath;     IsMarkdown=$false })
@@ -429,55 +430,39 @@ if ($CombineToXlsx) {
                 }
             }
 
-            # Helper to surface exact location of any COM failure (the default error message
-            # often loses context inside the COM interop stack).
-            function _Step ([string]$Label, [scriptblock]$Action) {
-                try { return & $Action }
-                catch {
-                    throw "Failed during '$Label': $($_.Exception.Message)"
-                }
+            # Pre-allocate every sheet in one go via SheetsInNewWorkbook. This sidesteps
+            # all the failure modes of Worksheets.Add / Worksheets.Move under PS 7 COM
+            # interop ("op_Addition", "Unable to get the Move property", etc.) by simply
+            # never calling Add or Move at all.
+            $sheetCount = $sheetSpecs.Count
+            $excel.SheetsInNewWorkbook = $sheetCount
+            $wb = $excel.Workbooks.Add()
+
+            # Defensive: if Excel didn't honor SheetsInNewWorkbook (rare, but possible if a
+            # template overrides it), append/remove sheets manually one at a time.
+            while ($wb.Worksheets.Count -lt $sheetCount) {
+                $tail = $wb.Worksheets.Item($wb.Worksheets.Count)
+                [void]$wb.Worksheets.Add([System.Reflection.Missing]::Value, $tail)
+            }
+            while ($wb.Worksheets.Count -gt $sheetCount) {
+                $wb.Worksheets.Item($wb.Worksheets.Count).Delete()
             }
 
-            $wb = _Step "Workbooks.Add" { $excel.Workbooks.Add() }
-
-            # Pre-create all sheets up front. Reuse the default first sheet for the first
-            # spec; for the rest, call Worksheets.Add with the After parameter so each new
-            # sheet is inserted at the end of the workbook. This avoids the fragile
-            # Add()-then-Move() pattern (Move occasionally fails via COM with
-            # "Unable to get the Move property of the Worksheet class" depending on which
-            # sheet is active and whether ScreenUpdating is off).
-            $sheets = New-Object System.Collections.Generic.List[object]
-            for ($i = 0; $i -lt $sheetSpecs.Count; $i++) {
-                $spec = $sheetSpecs[$i]
-                if ($i -eq 0) {
-                    # Reuse the default first sheet that comes with a new workbook
-                    $sheet = _Step "Worksheets.Item(1)" { $wb.Worksheets.Item(1) }
-                }
-                else {
-                    # Worksheets.Add(Before, After, Count, Type) - pass Missing for Before
-                    # and the current last sheet for After so the new sheet lands at the end.
-                    $lastIdx   = _Step "Worksheets.Count" { $wb.Worksheets.Count }
-                    $lastSheet = _Step "Worksheets.Item($lastIdx)" { $wb.Worksheets.Item($lastIdx) }
-                    $sheet = _Step "Worksheets.Add (after '$($lastSheet.Name)' for '$($spec.Name)')" {
-                        $wb.Worksheets.Add([Type]::Missing, $lastSheet, [Type]::Missing, [Type]::Missing)
-                    }
-                }
-                _Step "$($spec.Name).Name=" { $sheet.Name = $spec.Name }
-                $sheets.Add($sheet) | Out-Null
+            # Name each pre-allocated sheet in order
+            for ($i = 0; $i -lt $sheetCount; $i++) {
+                $wb.Worksheets.Item($i + 1).Name = $sheetSpecs[$i].Name
             }
 
             # Populate each sheet
-            for ($i = 0; $i -lt $sheetSpecs.Count; $i++) {
+            for ($i = 0; $i -lt $sheetCount; $i++) {
                 $spec  = $sheetSpecs[$i]
-                $sheet = $sheets[$i]
+                $sheet = $wb.Worksheets.Item($i + 1)
 
                 if ($spec.IsMarkdown) {
                     # Drop the README markdown into column A as text rows
                     $lines = @(Get-Content $spec.File)
                     for ($j = 0; $j -lt $lines.Count; $j++) {
-                        _Step "$($spec.Name) row $($j+1)" {
-                            $sheet.Cells.Item([int]($j + 1), 1).Value2 = [string]$lines[$j]
-                        }
+                        $sheet.Cells.Item([int]($j + 1), 1).Value2 = [string]$lines[$j]
                     }
                     $sheet.Columns.Item(1).ColumnWidth = 120
                     $sheet.Columns.Item(1).WrapText    = $false
@@ -504,10 +489,10 @@ if ($CombineToXlsx) {
                         }
                     }
 
-                    $startCell = _Step "$($spec.Name) startCell" { $sheet.Cells.Item(1, 1) }
-                    $endCell   = _Step "$($spec.Name) endCell"   { $sheet.Cells.Item([int]$rowCount, [int]$colCount) }
-                    $range     = _Step "$($spec.Name) Range"     { $sheet.Range($startCell, $endCell) }
-                    _Step "$($spec.Name) Value2 bulk write" { $range.Value2 = $matrix }
+                    $startCell = $sheet.Cells.Item(1, 1)
+                    $endCell   = $sheet.Cells.Item([int]$rowCount, [int]$colCount)
+                    $range     = $sheet.Range($startCell, $endCell)
+                    $range.Value2 = $matrix
 
                     # Make it a real Excel Table for AutoFilter + Copilot recognition.
                     # Excel table names can't contain dots, spaces or start with a digit -
@@ -515,7 +500,7 @@ if ($CombineToXlsx) {
                     try {
                         $tblName = "$($spec.Name)_tbl" -replace '[^A-Za-z0-9_]', '_'
                         if ($tblName -match '^\d') { $tblName = "_$tblName" }
-                        [void]$sheet.ListObjects.Add(1, $range, [Type]::Missing, 1)   # 1 = xlSrcRange, 1 = xlYes
+                        [void]$sheet.ListObjects.Add(1, $range, [System.Reflection.Missing]::Value, 1)   # 1 = xlSrcRange, 1 = xlYes
                         $sheet.ListObjects.Item(1).Name = $tblName
                     }
                     catch {
@@ -527,14 +512,16 @@ if ($CombineToXlsx) {
 
             $xlsxPath = Join-Path $OutputFolder 'UsageReport.xlsx'
             if (Test-Path $xlsxPath) { Remove-Item $xlsxPath -Force }
-            _Step "SaveAs $xlsxPath" { $wb.SaveAs($xlsxPath, 51) }   # 51 = xlOpenXMLWorkbook (.xlsx)
+            $wb.SaveAs($xlsxPath, 51)   # 51 = xlOpenXMLWorkbook (.xlsx)
             $wb.Close($false)
             Write-Host "  $xlsxPath ($([math]::Round((Get-Item $xlsxPath).Length/1KB,1)) KB)" -ForegroundColor Green
         }
         catch {
-            Write-Warning "Excel COM workbook build failed: $_"
+            Write-Warning "Excel COM workbook build failed: $($_.Exception.Message)"
+            Write-Warning "  at: $($_.InvocationInfo.PositionMessage)"
         }
         finally {
+            try { $excel.SheetsInNewWorkbook = $previousSheetsInNewWorkbook } catch { }
             $excel.ScreenUpdating = $true
             $excel.Quit()
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
