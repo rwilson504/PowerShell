@@ -440,10 +440,12 @@ if ($CombineToXlsx) {
 
             $wb = _Step "Workbooks.Add" { $excel.Workbooks.Add() }
 
-            # Pre-create all sheets up front using the simplest signature (no Before/After
-            # positioning). Reuse the default first sheet for the first spec; insert the rest
-            # at the end one by one. Avoid the [Reflection.Missing]::Value + Worksheets.Item
-            # combo that PowerShell 7 sometimes mis-marshals as an Object[] arg pair.
+            # Pre-create all sheets up front. Reuse the default first sheet for the first
+            # spec; for the rest, call Worksheets.Add with the After parameter so each new
+            # sheet is inserted at the end of the workbook. This avoids the fragile
+            # Add()-then-Move() pattern (Move occasionally fails via COM with
+            # "Unable to get the Move property of the Worksheet class" depending on which
+            # sheet is active and whether ScreenUpdating is off).
             $sheets = New-Object System.Collections.Generic.List[object]
             for ($i = 0; $i -lt $sheetSpecs.Count; $i++) {
                 $spec = $sheetSpecs[$i]
@@ -452,13 +454,13 @@ if ($CombineToXlsx) {
                     $sheet = _Step "Worksheets.Item(1)" { $wb.Worksheets.Item(1) }
                 }
                 else {
-                    # Add at the end of the workbook. The Add() with no args inserts a new
-                    # sheet BEFORE the active sheet; we then move it to the end so the order
-                    # matches our spec.
-                    $sheet = _Step "Worksheets.Add (sheet '$($spec.Name)')" { $wb.Worksheets.Add() }
-                    $lastIdx = _Step "Worksheets.Count" { $wb.Worksheets.Count }
+                    # Worksheets.Add(Before, After, Count, Type) - pass Missing for Before
+                    # and the current last sheet for After so the new sheet lands at the end.
+                    $lastIdx   = _Step "Worksheets.Count" { $wb.Worksheets.Count }
                     $lastSheet = _Step "Worksheets.Item($lastIdx)" { $wb.Worksheets.Item($lastIdx) }
-                    _Step "$($spec.Name).Move(after lastSheet)" { $sheet.Move($null, $lastSheet) | Out-Null }
+                    $sheet = _Step "Worksheets.Add (after '$($lastSheet.Name)' for '$($spec.Name)')" {
+                        $wb.Worksheets.Add([Type]::Missing, $lastSheet, [Type]::Missing, [Type]::Missing)
+                    }
                 }
                 _Step "$($spec.Name).Name=" { $sheet.Name = $spec.Name }
                 $sheets.Add($sheet) | Out-Null
