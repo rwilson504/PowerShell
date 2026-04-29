@@ -490,29 +490,32 @@ if ($CombineToXlsx) {
                     }
                     $lastColLetter = _ColLetter $colCount
 
-                    # Bulk write ROW BY ROW with 1D arrays. This sidesteps a PS 7 + Excel
-                    # COM bug where assigning an Object[,] to Range.Value2 fails with
-                    # "Unable to cast Object[,] to String" - the IDispatch resolver picks a
-                    # String-typed setter overload. 1D arrays marshal cleanly as SAFEARRAYs.
-                    # The leading comma (`,$rowVals`) keeps PS from unrolling the array
-                    # back into pipeline output before the COM call.
+                    # Per-cell write via Cells.Item(row, col).Value2 = [string].
+                    # We tried two faster paths first - both fail under PS 7 + Excel COM:
+                    #   1) Object[,] -> Range.Value2  : "Unable to cast Object[,] to String"
+                    #   2) Per-row 1D Object[] wrapped as ', $rowVals' -> same error
+                    # The IDispatch resolver mis-picks a String-typed setter overload no
+                    # matter how the SAFEARRAY is shaped. Per-cell assignment is the only
+                    # reliable path under PS 7. ScreenUpdating/Calculation are already off
+                    # so wall-clock cost is acceptable for typical report sizes.
+                    $excel.Calculation = -4135   # xlCalculationManual
 
                     # Header row
-                    $headerVals = New-Object 'object[]' $colCount
-                    for ($c = 0; $c -lt $colCount; $c++) { $headerVals[$c] = [string]$headers[$c] }
-                    $sheet.Range("A1:${lastColLetter}1").Value2 = , $headerVals
+                    for ($c = 0; $c -lt $colCount; $c++) {
+                        $sheet.Cells.Item(1, $c + 1).Value2 = [string]$headers[$c]
+                    }
 
                     # Data rows
                     for ($r = 0; $r -lt $rows.Count; $r++) {
                         $row = $rows[$r]
-                        $rowVals = New-Object 'object[]' $colCount
+                        $excelRow = $r + 2
                         for ($c = 0; $c -lt $colCount; $c++) {
                             $val = $row.($headers[$c])
-                            $rowVals[$c] = if ($null -eq $val) { '' } else { [string]$val }
+                            $sheet.Cells.Item($excelRow, $c + 1).Value2 = if ($null -eq $val) { '' } else { [string]$val }
                         }
-                        $excelRow = $r + 2
-                        $sheet.Range("A${excelRow}:${lastColLetter}${excelRow}").Value2 = , $rowVals
                     }
+
+                    $excel.Calculation = -4105   # xlCalculationAutomatic
 
                     # Re-grab the full range as a single object for ListObjects.Add below
                     $range = $sheet.Range("A1:${lastColLetter}${rowCount}")
@@ -545,6 +548,7 @@ if ($CombineToXlsx) {
         }
         finally {
             try { $excel.SheetsInNewWorkbook = $previousSheetsInNewWorkbook } catch { }
+            try { $excel.Calculation = -4105 } catch { }   # xlCalculationAutomatic
             $excel.ScreenUpdating = $true
             $excel.Quit()
             [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
