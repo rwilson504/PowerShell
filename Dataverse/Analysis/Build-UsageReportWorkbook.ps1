@@ -478,14 +478,19 @@ if ($CombineToXlsx) {
                     $colCount = $headers.Count
                     $rowCount = $rows.Count + 1   # +1 for header
 
-                    # Build a 2D object[,] - much faster than per-cell write
+                    # Build a 2D object[,] - much faster than per-cell write.
+                    # NOTE the parens around ($r + 1) below: in PowerShell the comma
+                    # operator binds tighter than +, so `$matrix[$r + 1, $c]` would parse
+                    # as `$matrix[ $r + (1, $c) ]` and throw "Object[] does not contain a
+                    # method named 'op_Addition'" on the very first iteration.
                     $matrix = New-Object 'object[,]' $rowCount, $colCount
                     for ($c = 0; $c -lt $colCount; $c++) { $matrix[0, $c] = [string]$headers[$c] }
                     for ($r = 0; $r -lt $rows.Count; $r++) {
                         $row = $rows[$r]
+                        $rowIndex = $r + 1
                         for ($c = 0; $c -lt $colCount; $c++) {
                             $val = $row.($headers[$c])
-                            $matrix[$r + 1, $c] = if ($null -eq $val) { '' } else { [string]$val }
+                            $matrix[$rowIndex, $c] = if ($null -eq $val) { '' } else { [string]$val }
                         }
                     }
 
