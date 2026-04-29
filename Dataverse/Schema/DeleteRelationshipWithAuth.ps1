@@ -35,10 +35,13 @@ param (
 )
 
 # Get the access token
-$accessToken = & ..\EntraID\GetAccessTokenDeviceCode.ps1 -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$authScript  = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
 
 # Delete the relationship
-$response = & .\DeleteRelationship.ps1 -OrganizationUrl $OrganizationUrl -AccessToken $accessToken -RelationshipName $RelationshipName
+$mainScript = Join-Path $scriptDir "DeleteRelationship.ps1"
+$response = & $mainScript -OrganizationUrl $OrganizationUrl -AccessToken $accessToken -RelationshipName $RelationshipName
 
 # Output the response
 Write-Output $response

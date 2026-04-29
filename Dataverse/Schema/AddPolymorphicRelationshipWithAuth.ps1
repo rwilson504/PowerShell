@@ -55,10 +55,13 @@ param (
 )
 
 # Get the access token
-$accessToken = & ..\EntraID\GetAccessTokenDeviceCode.ps1 -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$authScript  = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
 
 # Create the relationship
-$response = & .\AddPolymorphicRelationship.ps1 -OrganizationUrl $OrganizationUrl -AccessToken $accessToken -SchemaName $SchemaName -ReferencedEntity $ReferencedEntity -ReferencingEntity $ReferencingEntity -LookupSchemaName $LookupSchemaName -LookupDisplayName $LookupDisplayName -LookupDescription $LookupDescription
+$mainScript = Join-Path $scriptDir "AddPolymorphicRelationship.ps1"
+$response = & $mainScript -OrganizationUrl $OrganizationUrl -AccessToken $accessToken -SchemaName $SchemaName -ReferencedEntity $ReferencedEntity -ReferencingEntity $ReferencingEntity -LookupSchemaName $LookupSchemaName -LookupDisplayName $LookupDisplayName -LookupDescription $LookupDescription
 
 # Output the response
 Write-Output $response
