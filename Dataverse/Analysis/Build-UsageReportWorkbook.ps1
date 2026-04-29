@@ -494,9 +494,12 @@ if ($CombineToXlsx) {
                         }
                     }
 
-                    $startCell = $sheet.Cells.Item(1, 1)
-                    $endCell   = $sheet.Cells.Item([int]$rowCount, [int]$colCount)
-                    $range     = $sheet.Range($startCell, $endCell)
+                    # Build the destination range via Resize from A1. `$sheet.Range(start,end)`
+                    # via PS COM sometimes resolves to a single cell (returning the address
+                    # as a string), which then fails Value2 assignment with
+                    # "Unable to cast Object[,] to String". Cells.Item(1,1).Resize(r,c) is
+                    # the unambiguous single-overload pattern for bulk writes.
+                    $range = $sheet.Cells.Item(1, 1).Resize([int]$rowCount, [int]$colCount)
                     $range.Value2 = $matrix
 
                     # Make it a real Excel Table for AutoFilter + Copilot recognition.
