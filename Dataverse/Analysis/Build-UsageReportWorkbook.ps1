@@ -254,15 +254,76 @@ $cleanup = $master |
 Write-Host "  Cleanup candidates: $(@($cleanup).Count)" -ForegroundColor Gray
 
 # ---- WRITE OUTPUTS ----
-$masterPath  = Join-Path $OutputFolder 'master.csv'
-$tablesPath  = Join-Path $OutputFolder 'tables.csv'
-$cleanupPath = Join-Path $OutputFolder 'cleanup.csv'
-$readmePath  = Join-Path $OutputFolder 'README.md'
+$masterPath     = Join-Path $OutputFolder 'master.csv'
+$tablesPath     = Join-Path $OutputFolder 'tables.csv'
+$cleanupPath    = Join-Path $OutputFolder 'cleanup.csv'
+$dictionaryPath = Join-Path $OutputFolder 'dictionary.csv'
+$readmePath     = Join-Path $OutputFolder 'README.md'
 
 Write-Host "Writing computed CSVs..." -ForegroundColor Cyan
 $master       | Export-Csv -Path $masterPath  -NoTypeInformation
 $tablesRollup | Export-Csv -Path $tablesPath  -NoTypeInformation
 @($cleanup)   | Export-Csv -Path $cleanupPath -NoTypeInformation
+
+# ---- COLUMN DICTIONARY (one row per column in master.csv / tables.csv) ----
+# Pure human-readable definitions of every output column so anyone opening the
+# workbook cold can interpret the data without re-reading the source scripts.
+$dictionary = @(
+    # ---- master.csv columns ----
+    [PSCustomObject]@{ Sheet='Master'; Column='TableLogicalName';        Source='attributeusage'; Description='Dataverse logical name of the parent table (e.g. msf_servicerequest). Lowercase. Composite join key with AttributeLogicalName.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TableDisplayName';        Source='attributeusage'; Description='Friendly display label for the table (e.g. "Service Request"). Localized to the org default language.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='AttributeLogicalName';    Source='attributeusage'; Description='Dataverse logical name of the column (e.g. msf_priority). Lowercase. Composite join key with TableLogicalName.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='AttributeDisplayName';    Source='attributeusage'; Description='Friendly display label for the column.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='AttributeType';           Source='attributeusage'; Description='Dataverse type code: String, Memo, Picklist, Lookup, DateTime, Boolean, Money, Integer, Decimal, Customer, Owner, etc.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='IsCustomAttribute';       Source='attributeusage'; Description='True/False. True for custom (publisher-prefixed) columns; False for system columns shipped by Microsoft.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='LookupTargets';           Source='attributeusage'; Description='For Lookup-type columns: semicolon-separated list of target table logical names (e.g. "systemuser;team"). Empty for non-lookups.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TotalRecords';            Source='attributeusage'; Description='Total number of records in the table at the time of the scan (the denominator for FillRatePercent).' }
+    [PSCustomObject]@{ Sheet='Master'; Column='PopulatedCount';          Source='attributeusage'; Description='Number of records where this column has a non-null value.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='FillRatePercent';         Source='attributeusage'; Description='PopulatedCount / TotalRecords * 100. 0 = field is never populated; 100 = always populated. "N/A" when the count call failed.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='LastAuditedOn';           Source='audithistory';   Description='Most recent createdon timestamp of any audit row that touched this column. Empty if no audit data in the window.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='DaysSinceLastAudited';    Source='audithistory';   Description='Whole days from "now" (UTC) back to LastAuditedOn. Empty if no audit data.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='AuditEntriesInWindow';    Source='audithistory';   Description='Total Create+Update audit events touching this column within the configured -DaysBack window.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='DistinctUsersInWindow';   Source='audithistory';   Description='Number of distinct users who triggered an audit event on this column. 1 = single-owner risk; high = broad usage.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='DistinctRecordsTouched';  Source='audithistory';   Description='Number of distinct records on which this column was modified. Distinguishes "5 records edited 100x" from "500 records edited once".' }
+    [PSCustomObject]@{ Sheet='Master'; Column='AuditStatus';             Source='audithistory';   Description='Per-attribute audit status: Success / NoAuditData / AuditDisabledForOrg / AuditDisabledForTable / AuditDisabledForColumn. Tells you whether "no entries" means "field unused" or "we cannot tell because auditing is off".' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TopUserDisplayName';      Source='useractivity';   Description='Display name of the #1 user (by record count) for ANY user lookup on this attribute. Excludes the "(no value)" bucket. Useful for finding process owners.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TopUserRecordCount';      Source='useractivity';   Description='How many records the TopUser is the user-lookup value on.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TopUserIsServiceAccount'; Source='useractivity';   Description='True/False. True when the top user is a non-interactive (accessmode=4) systemuser, e.g. "# DataverseSync". Filter these out to focus on real humans.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='OnAnyForm';               Source='uipresence';     Description='True/False. True if this column appears on at least one Main / QuickCreate / QuickView / etc. form.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='FormCount';               Source='uipresence';     Description='Number of distinct forms (Main + QuickCreate + QuickView) that reference this column.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='OnAnyView';               Source='uipresence';     Description='True/False. True if this column appears on at least one system view (savedquery).' }
+    [PSCustomObject]@{ Sheet='Master'; Column='ViewCount';               Source='uipresence';     Description='Number of distinct system views that reference this column.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='OnAnyChart';              Source='uipresence';     Description='True/False. True if this column appears in at least one chart datadescription.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='AnyUIPresence';           Source='uipresence';     Description='True/False composite. True when ANY of OnAnyForm / OnAnyView / OnAnyChart is True. False = the column is invisible everywhere in the UI - the strongest "dead field" signal.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='SolutionsContainingAttr'; Source='solutionmembership'; Description='Semicolon-separated unique-names of every solution that ships this column as an Attribute component.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='SolutionsAllManaged';     Source='solutionmembership'; Description='True if EVERY containing solution is managed (you cannot delete the column directly). False if at least one is unmanaged. Empty if not in any solution.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='SolutionsAnyCustom';      Source='solutionmembership'; Description='True if AT LEAST ONE containing solution component has IsCustomComponent = True. Indicates customer-built vs Microsoft-shipped attribute.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TableNewestModifiedOn';   Source='tableusage';     Description='Most recent modifiedon across the entire table (not just this column). Helps you tell "abandoned table" from "active table with abandoned columns".' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TableDistinctCreators';   Source='tableusage';     Description='Distinct count of createdby users across the table. 1 = single-owner table.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TableRecordsLast365Days'; Source='tableusage';     Description='How many records on this table were CREATED in the last 365 days. 0 = no new records in a year (likely abandoned table).' }
+    [PSCustomObject]@{ Sheet='Master'; Column='DeadFieldScore';          Source='computed';       Description='0-4 composite. Adds 1 for each of: FillRatePercent=0; no audit events in window; AnyUIPresence=False; all containing solutions are unmanaged. A custom attribute scoring 3+ is a strong cleanup candidate. Cleanup sheet auto-filters to score >= 2.' }
+
+    # ---- tables.csv columns ----
+    [PSCustomObject]@{ Sheet='Tables'; Column='TableLogicalName';          Source='recordcounts';   Description='Dataverse logical name of the table.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='TableDisplayName';          Source='recordcounts';   Description='Friendly display label.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='TableSchemaName';           Source='recordcounts';   Description='PascalCase schema name (e.g. msf_ServiceRequest). Used in code-gen and solution exports.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='TableType';                 Source='recordcounts';   Description='Standard / Virtual / Elastic. Virtual + Elastic tables are pre-skipped from RetrieveTotalRecordCount because the API does not support them.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='IsCustomEntity';            Source='recordcounts';   Description='True/False. True for custom (publisher-prefixed) tables; False for system tables shipped by Microsoft.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='OwnershipType';             Source='tableusage';     Description='UserOwned / TeamOwned / OrganizationOwned / BusinessOwned / etc. Determines whether ownerid lookup applies.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='RecordCount';               Source='recordcounts';   Description='Approximate row count from RetrieveTotalRecordCount (system-index based; may be slightly stale on test envs).' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='UsageBucket';               Source='recordcounts';   Description='Bucket label: Empty / Active (<=90d) / Dormant (91-365d) / Stale (>365d) / Unsupported / Unknown - based on the most recent activity timestamp.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='LastModifiedOn';            Source='recordcounts';   Description='Most recent modifiedon timestamp from the activity probe. Empty if no records or probe was skipped.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='DaysSinceLastModified';     Source='recordcounts';   Description='Whole days since LastModifiedOn (UTC).' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='NewestCreatedOn';           Source='tableusage';     Description='Most recent createdon - tells you whether new records are still being created.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='RecordsCreatedLast30Days';  Source='tableusage';     Description='Count of records with createdon in the last 30 days.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='RecordsCreatedLast90Days';  Source='tableusage';     Description='Count of records with createdon in the last 90 days.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='RecordsCreatedLast365Days'; Source='tableusage';     Description='Count of records with createdon in the last 365 days. Trend signal alongside the raw record count.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='DistinctCreators';          Source='tableusage';     Description='Distinct createdby user count. 1 = automation-only; high = broad org usage.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='DistinctModifiers';         Source='tableusage';     Description='Distinct modifiedby user count.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='DistinctOwners';            Source='tableusage';     Description='Distinct ownerid user count. Empty for organization-owned tables (no per-record owner).' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='ContainingSolutions';       Source='solutionmembership'; Description='Semicolon-separated unique-names of every solution that ships this table as an Entity component.' }
+)
+$dictionary | Export-Csv -Path $dictionaryPath -NoTypeInformation
 
 # README -------------------------------------------------------------------
 $readme = @"
@@ -276,9 +337,10 @@ Generated by ``Build-UsageReportWorkbook.ps1`` on top of CSVs produced by
 ### Generated join files (this script)
 | File | What it is |
 |---|---|
-| ``master.csv``   | Full per-attribute join. Spine = attributeusage, with audit / UI / top-user / solution data left-joined on (TableLogicalName, AttributeLogicalName). One row per attribute. |
-| ``tables.csv``   | Per-table roll-up joining recordcounts + tableusage on TableLogicalName. One row per table. |
-| ``cleanup.csv``  | Pre-filtered Master view: ``DeadFieldScore >= 2 AND IsCustomAttribute = True``. Sorted by DeadFieldScore desc. |
+| ``master.csv``     | Full per-attribute join. Spine = attributeusage, with audit / UI / top-user / solution data left-joined on (TableLogicalName, AttributeLogicalName). One row per attribute. |
+| ``tables.csv``     | Per-table roll-up joining recordcounts + tableusage on TableLogicalName. One row per table. |
+| ``dictionary.csv`` | Column glossary for master.csv and tables.csv. One row per output column with Sheet / Column / Source / Description. |
+| ``cleanup.csv``    | Pre-filtered Master view: ``DeadFieldScore >= 2 AND IsCustomAttribute = True``. Sorted by DeadFieldScore desc. |
 
 ### Source CSVs (from Invoke-DataverseUsageReport.ps1)
 | File | Source script |
@@ -325,9 +387,10 @@ then re-run this script against it. master/tables/cleanup are rebuilt from scrat
 Set-Content -Path $readmePath -Value $readme -Encoding UTF8
 
 Write-Host "Generated:" -ForegroundColor Green
-Write-Host "  $masterPath  ($($master.Count) rows)"
-Write-Host "  $tablesPath  ($($tablesRollup.Count) rows)"
-Write-Host "  $cleanupPath ($(@($cleanup).Count) rows)"
+Write-Host "  $masterPath     ($($master.Count) rows)"
+Write-Host "  $tablesPath     ($($tablesRollup.Count) rows)"
+Write-Host "  $cleanupPath    ($(@($cleanup).Count) rows)"
+Write-Host "  $dictionaryPath ($($dictionary.Count) column definitions)"
 Write-Host "  $readmePath"
 
 # OPTIONAL: combine into single .xlsx via Excel COM ------------------------
@@ -355,10 +418,11 @@ if ($CombineToXlsx) {
             # hashtable's op_Addition (merge) over array growth when the RHS is a hashtable,
             # which throws "does not contain a method named 'op_Addition'".
             $sheetSpecs = New-Object System.Collections.Generic.List[hashtable]
-            [void]$sheetSpecs.Add(@{ Name='README';  File=$readmePath;  IsMarkdown=$true })
-            [void]$sheetSpecs.Add(@{ Name='Master';  File=$masterPath;  IsMarkdown=$false })
-            [void]$sheetSpecs.Add(@{ Name='Tables';  File=$tablesPath;  IsMarkdown=$false })
-            [void]$sheetSpecs.Add(@{ Name='Cleanup'; File=$cleanupPath; IsMarkdown=$false })
+            [void]$sheetSpecs.Add(@{ Name='README';     File=$readmePath;     IsMarkdown=$true })
+            [void]$sheetSpecs.Add(@{ Name='Master';     File=$masterPath;     IsMarkdown=$false })
+            [void]$sheetSpecs.Add(@{ Name='Tables';     File=$tablesPath;     IsMarkdown=$false })
+            [void]$sheetSpecs.Add(@{ Name='Dictionary'; File=$dictionaryPath; IsMarkdown=$false })
+            [void]$sheetSpecs.Add(@{ Name='Cleanup';    File=$cleanupPath;    IsMarkdown=$false })
             foreach ($name in $reportPatterns.Keys) {
                 if ($datasetFiles[$name]) {
                     [void]$sheetSpecs.Add(@{ Name=$name; File=$datasetFiles[$name]; IsMarkdown=$false })
@@ -491,9 +555,11 @@ return [PSCustomObject]@{
     MasterCsv       = $masterPath
     TablesCsv       = $tablesPath
     CleanupCsv      = $cleanupPath
+    DictionaryCsv   = $dictionaryPath
     ReadmePath      = $readmePath
     XlsxPath        = $xlsxPath
     MasterRowCount  = $master.Count
     TablesRowCount  = $tablesRollup.Count
     CleanupRowCount = @($cleanup).Count
+    DictionaryRowCount = $dictionary.Count
 }
