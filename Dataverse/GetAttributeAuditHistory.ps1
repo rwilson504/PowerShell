@@ -453,7 +453,13 @@ try {
 
         # Decide whether to bother pulling audit data
         $skipAuditQuery = (-not $orgAuditOn) -or (-not $meta.IsAuditEnabled) -or ($eligible.Count -eq 0)
-        $auditAggregate = @{}  # ColumnNumber -> @{ LastCreatedOn; LastOperation; LastUserId; Count }
+        $auditAggregate = @{}  # ColumnNumber -> { LastCreatedOn, LastOperation, LastUserId, ... }
+
+        # Date thresholds for trend buckets (UTC)
+        $nowUtc        = (Get-Date).ToUniversalTime()
+        $threshold30   = $nowUtc.AddDays(-30)
+        $threshold90   = $nowUtc.AddDays(-90)
+        $threshold365  = $nowUtc.AddDays(-365)
 
         if (-not $skipAuditQuery) {
             Write-Host "  Pulling audit rows since $($sinceUtc.ToString('yyyy-MM-dd'))..." -ForegroundColor Cyan
@@ -466,23 +472,41 @@ try {
             foreach ($row in $auditRows) {
                 if ([string]::IsNullOrWhiteSpace($row.attributemask)) { continue }
                 $colNums = $row.attributemask -split ',' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }
+                $rowDate = if ($row.createdon) { ([datetime]$row.createdon).ToUniversalTime() } else { $null }
+
                 foreach ($cn in $colNums) {
                     if (-not $auditAggregate.ContainsKey($cn)) {
                         $auditAggregate[$cn] = [PSCustomObject]@{
-                            LastCreatedOn  = $row.createdon
-                            LastOperation  = $row.operation
-                            LastUserId     = $row.userid
-                            LastObjectId   = $row.objectid
-                            Count          = 0
+                            LastCreatedOn   = $row.createdon
+                            LastOperation   = $row.operation
+                            LastUserId      = $row.userid
+                            LastObjectId    = $row.objectid
+                            Count           = 0
+                            CreateCount     = 0
+                            UpdateCount     = 0
+                            EventsLast30d   = 0
+                            EventsLast90d   = 0
+                            EventsLast365d  = 0
+                            UserSet         = New-Object System.Collections.Generic.HashSet[string]
+                            RecordSet       = New-Object System.Collections.Generic.HashSet[string]
                         }
                     }
-                    $auditAggregate[$cn].Count++
+                    $agg = $auditAggregate[$cn]
+                    $agg.Count++
+                    if ([int]$row.operation -eq 1)      { $agg.CreateCount++ }
+                    elseif ([int]$row.operation -eq 2)  { $agg.UpdateCount++ }
+                    if ($row.userid)   { [void]$agg.UserSet.Add([string]$row.userid) }
+                    if ($row.objectid) { [void]$agg.RecordSet.Add([string]$row.objectid) }
+                    if ($rowDate) {
+                        if ($rowDate -ge $threshold30)  { $agg.EventsLast30d++ }
+                        if ($rowDate -ge $threshold90)  { $agg.EventsLast90d++ }
+                        if ($rowDate -ge $threshold365) { $agg.EventsLast365d++ }
+                    }
                 }
             }
         }
 
-        # Emit one row per eligible attribute
-        $now = (Get-Date).ToUniversalTime()
+        # Emit one row per eligible attribute (use $nowUtc declared earlier for date math)
         foreach ($attr in $eligible) {
             $cn = if ($null -ne $attr.ColumnNumber) { [int]$attr.ColumnNumber } else { -1 }
             $hit = $null
@@ -499,7 +523,7 @@ try {
 
             $lastAuditedOn   = if ($hit) { $hit.LastCreatedOn } else { $null }
             $daysSince       = if ($lastAuditedOn) {
-                [math]::Max(0, [int]([math]::Floor(($now - ([datetime]$lastAuditedOn).ToUniversalTime()).TotalDays)))
+                [math]::Max(0, [int]([math]::Floor(($nowUtc - ([datetime]$lastAuditedOn).ToUniversalTime()).TotalDays)))
             } else { $null }
             $lastAction      = if ($hit) { $OperationLabels[[int]$hit.LastOperation] } else { $null }
             $lastUserId      = if ($hit) { $hit.LastUserId } else { $null }
@@ -509,23 +533,30 @@ try {
             if ($UnusedOnly -and $status -eq 'Success') { continue }
 
             $allResults.Add([PSCustomObject][ordered]@{
-                TableLogicalName        = $logicalName
-                TableDisplayName        = $meta.DisplayName
-                TableSchemaName         = $meta.SchemaName
-                AttributeLogicalName    = $attr.LogicalName
-                AttributeSchemaName     = $attr.SchemaName
-                AttributeDisplayName    = $attr.DisplayName
-                AttributeType           = $attr.AttributeType
-                IsCustomAttribute       = $attr.IsCustomAttribute
-                LookupTargets           = $attr.LookupTargets
-                IsAuditEnabledForColumn = $attr.IsAuditEnabled
-                LastAuditedOn           = $lastAuditedOn
-                LastAuditedAction       = $lastAction
-                LastAuditedByUserId     = $lastUserId
-                AuditEntriesInWindow    = $entriesInWindow
-                DaysSinceLastAudited    = $daysSince
-                WindowDays              = $DaysBack
-                Status                  = $status
+                TableLogicalName            = $logicalName
+                TableDisplayName            = $meta.DisplayName
+                TableSchemaName             = $meta.SchemaName
+                AttributeLogicalName        = $attr.LogicalName
+                AttributeSchemaName         = $attr.SchemaName
+                AttributeDisplayName        = $attr.DisplayName
+                AttributeType               = $attr.AttributeType
+                IsCustomAttribute           = $attr.IsCustomAttribute
+                LookupTargets               = $attr.LookupTargets
+                IsAuditEnabledForColumn     = $attr.IsAuditEnabled
+                LastAuditedOn               = $lastAuditedOn
+                LastAuditedAction           = $lastAction
+                LastAuditedByUserId         = $lastUserId
+                AuditEntriesInWindow        = $entriesInWindow
+                CreateEvents                = if ($hit) { $hit.CreateCount } else { 0 }
+                UpdateEvents                = if ($hit) { $hit.UpdateCount } else { 0 }
+                EventsLast30Days            = if ($hit) { $hit.EventsLast30d } else { 0 }
+                EventsLast90Days            = if ($hit) { $hit.EventsLast90d } else { 0 }
+                EventsLast365Days           = if ($hit) { $hit.EventsLast365d } else { 0 }
+                DistinctUsersInWindow       = if ($hit) { $hit.UserSet.Count } else { 0 }
+                DistinctRecordsTouched      = if ($hit) { $hit.RecordSet.Count } else { 0 }
+                DaysSinceLastAudited        = $daysSince
+                WindowDays                  = $DaysBack
+                Status                      = $status
             })
         }
     }

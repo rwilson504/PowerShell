@@ -1,0 +1,53 @@
+<#
+.SYNOPSIS
+    Acquires an access token via device code flow and reports table-level usage activity
+    (newest record, distinct creators/owners, records-created trend buckets).
+
+.PARAMETER TenantId
+    The Azure AD tenant ID.
+.PARAMETER ClientId
+    The client ID of your registered Azure AD app.
+.PARAMETER Environment
+    "Public" / "GCC" / "GCCH" / "DoD". Default "Public".
+.PARAMETER OrganizationUrl
+    The Dataverse organization URL.
+.PARAMETER Tables
+    Required. One or more table logical names.
+.PARAMETER OutputFormat
+    "Table" / "CSV" / "JSON". Default "Table".
+.PARAMETER OutputPath
+    Optional output file path.
+
+.EXAMPLE
+    .\GetTableUsageActivityWithAuth.ps1 -TenantId "..." -ClientId "..." -OrganizationUrl "https://your-org.crm.dynamics.com" -Tables "account","msf_program","msf_contract" -OutputFormat CSV
+#>
+
+param (
+    [Parameter(Mandatory = $true)] [string]$TenantId,
+    [Parameter(Mandatory = $true)] [string]$ClientId,
+    [Parameter(Mandatory = $false)] [ValidateSet("Public", "GCC", "GCCH", "DoD")] [string]$Environment = "Public",
+    [Parameter(Mandatory = $true)] [string]$OrganizationUrl,
+    [Parameter(Mandatory = $true)] [string[]]$Tables,
+    [Parameter(Mandatory = $false)] [ValidateSet("Table", "CSV", "JSON")] [string]$OutputFormat = "Table",
+    [Parameter(Mandatory = $false)] [string]$OutputPath
+)
+
+Write-Host "Acquiring access token..." -ForegroundColor Cyan
+$scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
+$authScript  = Join-Path $scriptDir "..\EntraID\GetAccessTokenDeviceCode.ps1"
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+
+if (-not $accessToken) { Write-Error "Failed to acquire access token."; exit 1 }
+Write-Host "Access token acquired successfully." -ForegroundColor Green
+
+$scriptParams = @{
+    OrganizationUrl = $OrganizationUrl
+    AccessToken     = $accessToken
+    Tables          = $Tables
+    OutputFormat    = $OutputFormat
+}
+if ($OutputPath) { $scriptParams.OutputPath = $OutputPath }
+
+$mainScript = Join-Path $scriptDir "GetTableUsageActivity.ps1"
+$results = & $mainScript @scriptParams
+return $results
