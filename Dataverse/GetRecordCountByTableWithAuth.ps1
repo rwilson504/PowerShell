@@ -132,7 +132,10 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(0, 60000)]
-    [int]$RequestThrottleDelayMs = 0
+    [int]$RequestThrottleDelayMs = 0,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName
 )
 
 # Get the access token using device code flow
@@ -193,6 +196,10 @@ if ($NoBatchActivityProbes) {
 
 if ($RequestThrottleDelayMs -gt 0) {
     $scriptParams.RequestThrottleDelayMs = $RequestThrottleDelayMs
+}
+
+if ($SolutionUniqueName) {
+    $scriptParams.SolutionUniqueName = $SolutionUniqueName
 }
 
 # Get record counts

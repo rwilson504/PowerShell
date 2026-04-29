@@ -159,7 +159,10 @@ param (
 
     [Parameter(Mandatory = $false)]
     [ValidateRange(0, 60000)]
-    [int]$RequestThrottleDelayMs = 0
+    [int]$RequestThrottleDelayMs = 0,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName
 )
 
 # Remove trailing slash from URL if present
@@ -167,6 +170,9 @@ $OrganizationUrl = $OrganizationUrl.TrimEnd('/')
 
 # Load the shared OData $batch helper (provides Invoke-ODataBatch)
 . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "_ODataBatchHelper.ps1")
+
+# Load the shared solution-filter helper (provides Resolve-SolutionScopedTables)
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "_SolutionFilterHelper.ps1")
 
 # Set up headers for API calls
 $headers = @{
@@ -411,12 +417,16 @@ function Get-RecordCounts {
     $allLogicalNames = @()
 
     foreach ($table in $TableList) {
-        $logicalName = if ($table -is [PSCustomObject]) { $table.LogicalName } else { $table }
-        $displayName = if ($table -is [PSCustomObject] -and $table.DisplayName) { $table.DisplayName } else { $logicalName }
-        $entitySetName = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['EntitySetName']) { $table.EntitySetName } else { $null }
-        $schemaName = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['SchemaName']) { $table.SchemaName } else { $null }
-        $isCustom = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['IsCustomEntity']) { [bool]$table.IsCustomEntity } else { $null }
-        $tableType = if ($table -is [PSCustomObject] -and $table.PSObject.Properties['TableType']) { $table.TableType } else { $null }
+        # Strings can pass `-is [PSCustomObject]` after passing through pipeline cmdlets
+        # like Sort-Object, so check for LogicalName property explicitly instead.
+        $isStr = ($table -is [string])
+        $logicalName  = if ($isStr) { $table } elseif ($table.PSObject.Properties['LogicalName']) { [string]$table.LogicalName } else { [string]$table }
+        if ([string]::IsNullOrWhiteSpace($logicalName)) { continue }   # skip null/empty entries
+        $displayName  = if (-not $isStr -and $table.PSObject.Properties['DisplayName']   -and $table.DisplayName)   { $table.DisplayName }   else { $logicalName }
+        $entitySetName = if (-not $isStr -and $table.PSObject.Properties['EntitySetName']) { $table.EntitySetName } else { $null }
+        $schemaName    = if (-not $isStr -and $table.PSObject.Properties['SchemaName'])    { $table.SchemaName }    else { $null }
+        $isCustom      = if (-not $isStr -and $table.PSObject.Properties['IsCustomEntity']){ [bool]$table.IsCustomEntity } else { $null }
+        $tableType     = if (-not $isStr -and $table.PSObject.Properties['TableType'])     { $table.TableType }     else { $null }
 
         $displayNameMap[$logicalName] = $displayName
         $entitySetNameMap[$logicalName] = $entitySetName
@@ -766,10 +776,18 @@ function Get-RecordCounts {
 
 # Main script execution
 try {
+    # Apply -SolutionUniqueName scope if provided (intersects with -Tables when both supplied)
+    $resolvedTables = Resolve-SolutionScopedTables -OrgUrl $OrganizationUrl -Headers $headers -Tables $Tables -SolutionUniqueName $SolutionUniqueName
+
     # Determine which tables to query
-    if ($Tables -and $Tables.Count -gt 0) {
-        Write-Host "Processing $($Tables.Count) specified table(s)..." -ForegroundColor Cyan
-        $tablesToQuery = $Tables
+    if ($resolvedTables -and $resolvedTables.Count -gt 0) {
+        Write-Host "Processing $($resolvedTables.Count) specified table(s)..." -ForegroundColor Cyan
+        $tablesToQuery = $resolvedTables
+    }
+    elseif ($SolutionUniqueName) {
+        # Solution filter was specified but resolved to zero tables - bail out
+        Write-Error "No tables to process after applying -SolutionUniqueName filter."
+        exit 1
     }
     else {
         # Get all readable tables from metadata

@@ -61,6 +61,9 @@ param (
     [switch]$ExcludeSystemSolutions,
 
     [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName,
+
+    [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]
     [string]$OutputFormat = "Table",
 
@@ -86,6 +89,7 @@ if ($Tables -and $Tables.Count -gt 0) { $scriptParams.Tables                 = $
 if ($UnmanagedOnly)                   { $scriptParams.UnmanagedOnly          = $true }
 if ($ManagedOnly)                     { $scriptParams.ManagedOnly            = $true }
 if ($ExcludeSystemSolutions)          { $scriptParams.ExcludeSystemSolutions = $true }
+if ($SolutionUniqueName)              { $scriptParams.SolutionUniqueName     = $SolutionUniqueName }
 if ($OutputPath)                      { $scriptParams.OutputPath             = $OutputPath }
 
 $mainScript = Join-Path $scriptDir "GetSolutionMembership.ps1"

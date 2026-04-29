@@ -79,8 +79,11 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$OrganizationUrl,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string[]]$Tables,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName,
 
     [Parameter(Mandatory = $false)]
     [string[]]$Attributes,
@@ -130,8 +133,11 @@ Write-Host "Access token acquired successfully." -ForegroundColor Green
 $scriptParams = @{
     OrganizationUrl = $OrganizationUrl
     AccessToken     = $accessToken
-    Tables          = $Tables
     OutputFormat    = $OutputFormat
+}
+
+if ($Tables -and $Tables.Count -gt 0) {
+    $scriptParams.Tables = $Tables
 }
 
 if ($Attributes -and $Attributes.Count -gt 0) {
@@ -145,6 +151,7 @@ if ($Filter)                   { $scriptParams.Filter                   = $Filte
 if ($BatchRequestSize -ne 100)         { $scriptParams.BatchRequestSize         = $BatchRequestSize }
 if ($RequestThrottleDelayMs -gt 0)     { $scriptParams.RequestThrottleDelayMs   = $RequestThrottleDelayMs }
 if ($OutputPath)                       { $scriptParams.OutputPath               = $OutputPath }
+if ($SolutionUniqueName)               { $scriptParams.SolutionUniqueName       = $SolutionUniqueName }
 
 $mainScript = Join-Path $scriptDir "GetFieldFillRateByTable.ps1"
 $results = & $mainScript @scriptParams

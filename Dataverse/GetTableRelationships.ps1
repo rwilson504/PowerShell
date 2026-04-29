@@ -95,7 +95,10 @@ param (
     [string]$OutputFormat = "Table",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName
 )
 
 # Remove trailing slash from URL if present
@@ -109,6 +112,9 @@ $headers = @{
     "Content-Type"     = "application/json; charset=utf-8"
     "Prefer"           = "odata.include-annotations=*"
 }
+
+# Load shared solution-filter helper (Resolve-SolutionScopedTables)
+. (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "_SolutionFilterHelper.ps1")
 
 function Get-EntityDisplayNameMap {
     <#
@@ -215,13 +221,20 @@ try {
     $relationships = Get-AllRelationships -OrgUrl $OrganizationUrl -Headers $headers `
         -IncludeOneToMany $includeOneToMany -IncludeManyToMany $includeManyToMany
 
-    # Normalize -Tables filter (case-insensitive)
+    # Apply -SolutionUniqueName scope (intersects with -Tables when both are supplied)
+    $resolvedTables = Resolve-SolutionScopedTables -OrgUrl $OrganizationUrl -Headers $headers -Tables $Tables -SolutionUniqueName $SolutionUniqueName
+
+    # Normalize Tables filter (case-insensitive)
     $tablesFilterSet = $null
-    if ($Tables -and $Tables.Count -gt 0) {
+    if ($resolvedTables -and $resolvedTables.Count -gt 0) {
         $tablesFilterSet = [System.Collections.Generic.HashSet[string]]::new(
-            [string[]]@($Tables | ForEach-Object { $_.ToLowerInvariant() }),
+            [string[]]@($resolvedTables | ForEach-Object { $_.ToLowerInvariant() }),
             [System.StringComparer]::OrdinalIgnoreCase
         )
+    }
+    elseif ($SolutionUniqueName) {
+        Write-Error "No tables to process after applying -SolutionUniqueName filter."
+        return
     }
 
     Write-Host "Building output rows..." -ForegroundColor Cyan

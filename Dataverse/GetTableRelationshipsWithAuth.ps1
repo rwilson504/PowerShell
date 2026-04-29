@@ -82,7 +82,10 @@ param (
     [string]$OutputFormat = "Table",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName
 )
 
 # Get the access token using device code flow
@@ -120,6 +123,10 @@ if ($CustomRelationshipsOnly) {
 
 if ($OutputPath) {
     $scriptParams.OutputPath = $OutputPath
+}
+
+if ($SolutionUniqueName) {
+    $scriptParams.SolutionUniqueName = $SolutionUniqueName
 }
 
 $mainScript = Join-Path $scriptDir "GetTableRelationships.ps1"

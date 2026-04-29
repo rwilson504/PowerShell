@@ -103,6 +103,9 @@ param (
     [switch]$ExcludeSystemSolutions,
 
     [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName,
+
+    [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]
     [string]$OutputFormat = "Table",
 
@@ -291,6 +294,7 @@ try {
         if ($UnmanagedOnly -and $sol.ismanaged) { continue }
         if ($ManagedOnly -and -not $sol.ismanaged) { continue }
         if ($ExcludeSystemSolutions -and ($SystemSolutionUniqueNames -contains $sol.uniquename -or $sol.uniquename -match '^(msdyn|msft|mscrm)')) { continue }
+        if ($SolutionUniqueName -and $sol.uniquename -ne $SolutionUniqueName) { continue }
 
         $typeName = $ComponentTypeMap[[int]$c.componenttype]
         if (-not $typeName) { continue }

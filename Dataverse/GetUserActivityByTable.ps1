@@ -113,8 +113,11 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$AccessToken,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string[]]$Tables,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName,
 
     [Parameter(Mandatory = $false)]
     [string[]]$UserLookupAttributes,
@@ -394,6 +397,14 @@ function Get-UserDirectory {
 
 # Main script execution
 try {
+    # Load shared solution-filter helper and apply -SolutionUniqueName scope
+    . (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "_SolutionFilterHelper.ps1")
+    $Tables = Resolve-SolutionScopedTables -OrgUrl $OrganizationUrl -Headers $headers -Tables $Tables -SolutionUniqueName $SolutionUniqueName
+    if (-not $Tables -or $Tables.Count -eq 0) {
+        Write-Error "No tables to process. Specify -Tables and/or -SolutionUniqueName."
+        exit 1
+    }
+
     $allResults = New-Object System.Collections.Generic.List[object]
 
     if ($Filter) {

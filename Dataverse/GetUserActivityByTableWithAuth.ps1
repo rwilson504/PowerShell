@@ -70,8 +70,11 @@ param (
     [Parameter(Mandatory = $true)]
     [string]$OrganizationUrl,
 
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string[]]$Tables,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SolutionUniqueName,
 
     [Parameter(Mandatory = $false)]
     [string[]]$UserLookupAttributes,
@@ -112,9 +115,10 @@ Write-Host "Access token acquired successfully." -ForegroundColor Green
 $scriptParams = @{
     OrganizationUrl = $OrganizationUrl
     AccessToken     = $accessToken
-    Tables          = $Tables
     OutputFormat    = $OutputFormat
 }
+if ($Tables -and $Tables.Count -gt 0)                             { $scriptParams.Tables               = $Tables }
+if ($SolutionUniqueName)                                          { $scriptParams.SolutionUniqueName   = $SolutionUniqueName }
 
 if ($UserLookupAttributes -and $UserLookupAttributes.Count -gt 0) { $scriptParams.UserLookupAttributes        = $UserLookupAttributes }
 if ($AutoDetectUserLookups)                                       { $scriptParams.AutoDetectUserLookups       = $true }
