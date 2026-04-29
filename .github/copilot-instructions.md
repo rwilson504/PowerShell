@@ -10,14 +10,68 @@ This repository is a collection of reusable PowerShell scripts organized by tech
 
 ```
 <TechnologyArea>/
-    ScriptName.ps1              # Base script (accepts AccessToken or handles its own auth)
-    ScriptNameWithAuth.ps1      # Auth wrapper that acquires a token then calls the base script
+    README.md                     # Index of every script in this folder (REQUIRED)
+    <Subcategory>/                # Optional - large categories (e.g. Dataverse) split further
+        README.md                 # Index of every script in this subfolder (REQUIRED)
+        ScriptName.ps1            # Base script (accepts AccessToken or handles its own auth)
+        ScriptNameWithAuth.ps1    # Auth wrapper that acquires a token then calls the base script
 EntraID/
     GetAccessTokenDeviceCode.ps1  # Shared device-code-flow auth helper
+README.md                          # Top-level index linking to every category README
 ```
 
 - Group scripts into folders by technology/service (e.g., `Dataverse/`, `SharePoint/`, `Files/`, `PowerShell/`).
 - Each folder should contain related scripts that target that technology.
+- When a category gets large enough that its scripts split into purposes (e.g. `Dataverse/Analysis/`, `Dataverse/Schema/`), promote those into subfolders and give each a `README.md`.
+
+---
+
+## Documentation Conventions (READMEs)
+
+Every folder that contains scripts must have a `README.md` listing those scripts. The repo also has a top-level `README.md` linking to each category's README. **Whenever a script is added, removed, renamed, or its purpose changes, update the relevant READMEs in the same commit.**
+
+### Top-level `README.md`
+
+- Brief one-line description of the repo.
+- A "Categories" section: bulleted list of each top-level folder with a one-line summary and a link to its `README.md`.
+- Anything genuinely repo-wide (zip-build hook setup, fresh-clone steps, etc.).
+
+Example:
+
+```markdown
+## Categories
+
+- **[Dataverse/](Dataverse/README.md)** - scripts for Dataverse Web API operations, schema, analysis, and admin.
+- **[EntraID/](EntraID/README.md)** - Microsoft Entra ID auth helpers and queries.
+- **[Files/](Files/README.md)** - filesystem utilities.
+- **[SharePoint/](SharePoint/README.md)** - SharePoint Online tooling.
+```
+
+### Per-folder `README.md`
+
+Required sections:
+
+1. **Folder purpose** - one or two sentences explaining what this folder is for.
+2. **Sub-categories** (if the folder has subfolders) - linked list with a short summary of each.
+3. **Scripts** - a markdown table with one row per script in this folder, containing at minimum:
+
+| Column | Content |
+|---|---|
+| Script | Name + relative-path link, e.g. `[GetRecordCountByTable.ps1](GetRecordCountByTable.ps1)` |
+| Purpose | One-line summary (mirrors the script's `.SYNOPSIS`) |
+| WithAuth pair? | Yes/No - link to the WithAuth wrapper if separate |
+
+For scripts that work together (e.g. an orchestrator + helpers), group them under a sub-heading explaining the relationship before the table.
+
+### When to update READMEs
+
+- **Adding a new script** → add a row to the relevant folder's `README.md` table; if the folder is brand-new, also add a link to the new folder in the top-level README.
+- **Renaming or moving a script** → update both the source folder's README (remove row) and the destination folder's README (add row).
+- **Significant scope change to a script** → update its row's Purpose column.
+- **Deleting a script** → remove the row.
+- **Adding a new category folder** → create that folder's `README.md` AND add a link to it from the top-level README.
+
+Keep README rows brief (one line of purpose); detailed behavior belongs in the script's comment-based help, not in the README. The README is for "what scripts exist and at a glance, what each one does"; the help block is for "how do I actually call this one."
 
 ---
 
