@@ -38,15 +38,21 @@
     attribute on the table is reported.
 
 .PARAMETER DaysBack
-    Number of days of audit history to scan. Default 365, valid range 1 to 3650 (10 years).
+    Number of days of audit history to scan. Pass an explicit value (1 to 3650) to override,
+    or leave at the default 0 to use AUTO mode:
 
-    Important: this is the WINDOW you ASK FOR. The actual ceiling is your environment's audit
-    retention setting (organization.auditretentionperiodv2, default 30 days, configurable up
-    to ~7 years on appropriate plans). If retention is 90 days but you pass -DaysBack 1825,
-    you simply see whatever audit data is still present (i.e. ~90 days).
+      AUTO mode picks the largest sensible window for the environment:
+        - If organization.auditretentionperiodv2 is set, use that exact value.
+        - If retention is unset / 0 (commonly 'Never expire' / 'Forever'), use the number of
+          days since the org was created (organization.createdon). Capped at 3650.
+        - If both reads fail, fall back to 365.
 
-    The script reports the org's current retention value at startup so you know your real
-    ceiling.
+    Going as far back as the data permits is essentially free (one extra audit page or two
+    on tables with low write activity), and gives the cleanest 'this field is genuinely
+    unused' signal.
+
+    NOTE: If you DO pass an explicit -DaysBack and it exceeds the org's configured retention,
+    the script warns up front. You will only see whatever audit data is still present.
 
 .PARAMETER LookupAttributesOnly
     Only emit rows for attributes whose AttributeType is Lookup. Useful for the "unused
@@ -133,8 +139,8 @@ param (
     [string[]]$Attributes,
 
     [Parameter(Mandatory = $false)]
-    [ValidateRange(1, 3650)]
-    [int]$DaysBack = 365,
+    [ValidateRange(0, 3650)]
+    [int]$DaysBack = 0,
 
     [Parameter(Mandatory = $false)]
     [switch]$LookupAttributesOnly,
@@ -181,10 +187,11 @@ $OperationLabels = @{
 function Get-OrgAuditEnabled {
     param ([string]$OrgUrl, [hashtable]$Headers)
     try {
-        $r = Invoke-RestMethod -Uri "$OrgUrl/api/data/v9.2/organizations?`$select=isauditenabled,auditretentionperiodv2" -Headers $Headers
+        $r = Invoke-RestMethod -Uri "$OrgUrl/api/data/v9.2/organizations?`$select=isauditenabled,auditretentionperiodv2,createdon" -Headers $Headers
         return [PSCustomObject]@{
             IsAuditEnabled  = [bool]$r.value[0].isauditenabled
             RetentionDays   = $r.value[0].auditretentionperiodv2
+            CreatedOn       = $r.value[0].createdon
         }
     }
     catch {
@@ -361,20 +368,44 @@ try {
         }
         else {
             $retentionLabel = if ($null -eq $orgAudit.RetentionDays -or $orgAudit.RetentionDays -le 0) {
-                "(not set; using platform default)"
+                "(unset / never expire)"
             } else {
                 "$($orgAudit.RetentionDays) day(s)"
             }
-            Write-Host "Org-level auditing is enabled. Audit retention: $retentionLabel" -ForegroundColor Green
-
-            if ($orgAudit.RetentionDays -and $orgAudit.RetentionDays -gt 0 -and $DaysBack -gt $orgAudit.RetentionDays) {
-                Write-Host "  WARNING: -DaysBack=$DaysBack exceeds the configured retention of $($orgAudit.RetentionDays) day(s). You will only see ~$($orgAudit.RetentionDays) day(s) of data." -ForegroundColor Yellow
+            $envAgeLabel = if ($orgAudit.CreatedOn) {
+                $age = [int]([math]::Floor(((Get-Date).ToUniversalTime() - ([datetime]$orgAudit.CreatedOn).ToUniversalTime()).TotalDays))
+                "$age day(s) old (created $([datetime]$orgAudit.CreatedOn | Get-Date -Format 'yyyy-MM-dd'))"
+            } else {
+                "(unknown age)"
             }
+            Write-Host "Org-level auditing is enabled. Retention: $retentionLabel. Environment: $envAgeLabel." -ForegroundColor Green
         }
     }
 
+    # Auto-resolve -DaysBack when 0: prefer retention, fall back to env age, fall back to 365.
+    if ($DaysBack -eq 0) {
+        $resolvedDays = 365
+        $resolvedSrc  = "fallback default"
+        if ($orgAudit) {
+            if ($orgAudit.RetentionDays -and $orgAudit.RetentionDays -gt 0) {
+                $resolvedDays = [math]::Min([int]$orgAudit.RetentionDays, 3650)
+                $resolvedSrc  = "configured retention"
+            }
+            elseif ($orgAudit.CreatedOn) {
+                $envAge = [int]([math]::Ceiling(((Get-Date).ToUniversalTime() - ([datetime]$orgAudit.CreatedOn).ToUniversalTime()).TotalDays))
+                $resolvedDays = [math]::Max(1, [math]::Min($envAge + 1, 3650))   # +1 to include creation-day audits
+                $resolvedSrc  = "environment age (retention is unset / 'never expire')"
+            }
+        }
+        $DaysBack = $resolvedDays
+        Write-Host "AUTO -DaysBack: scanning $DaysBack day(s) of history (source: $resolvedSrc)." -ForegroundColor Cyan
+    }
+    elseif ($orgAudit -and $orgAudit.IsAuditEnabled -and $orgAudit.RetentionDays -and $orgAudit.RetentionDays -gt 0 -and $DaysBack -gt $orgAudit.RetentionDays) {
+        Write-Host "  WARNING: -DaysBack=$DaysBack exceeds the configured retention of $($orgAudit.RetentionDays) day(s). You will only see ~$($orgAudit.RetentionDays) day(s) of data." -ForegroundColor Yellow
+    }
+
     $sinceUtc = (Get-Date).ToUniversalTime().AddDays(-$DaysBack)
-    Write-Host "Audit window requested: last $DaysBack day(s) (since $($sinceUtc.ToString('yyyy-MM-dd HH:mm:ss UTC')))" -ForegroundColor Cyan
+    Write-Host "Audit window: last $DaysBack day(s) (since $($sinceUtc.ToString('yyyy-MM-dd HH:mm:ss UTC')))" -ForegroundColor Cyan
 
     $allResults = New-Object System.Collections.Generic.List[object]
 

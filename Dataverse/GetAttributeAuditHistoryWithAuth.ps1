@@ -26,10 +26,9 @@
     Optional. Restrict analysis to these attribute logical names.
 
 .PARAMETER DaysBack
-    Number of days of audit history to scan. Default 365, valid range 1 to 3650 (10 years).
-    The actual ceiling is your environment's audit retention setting (default 30 days, can be
-    raised to ~7 years). If you request more than retention holds, you just see what is still
-    available. The base script reports the configured retention at startup.
+    Number of days of audit history to scan. Pass 1-3650 to override, or leave at default 0
+    to use AUTO mode (uses configured retention; falls back to environment age when retention
+    is unset/'never expire'). The base script reports what window was actually used.
 
 .PARAMETER LookupAttributesOnly
     Only emit rows for Lookup attributes - useful for the "unused lookup" detection workflow.
@@ -82,8 +81,8 @@ param (
     [string[]]$Attributes,
 
     [Parameter(Mandatory = $false)]
-    [ValidateRange(1, 3650)]
-    [int]$DaysBack = 365,
+    [ValidateRange(0, 3650)]
+    [int]$DaysBack = 0,
 
     [Parameter(Mandatory = $false)]
     [switch]$LookupAttributesOnly,
@@ -128,7 +127,7 @@ $scriptParams = @{
 }
 
 if ($Attributes -and $Attributes.Count -gt 0)  { $scriptParams.Attributes                  = $Attributes }
-if ($DaysBack -ne 365)                          { $scriptParams.DaysBack                    = $DaysBack }
+if ($DaysBack -gt 0)                            { $scriptParams.DaysBack                    = $DaysBack }
 if ($LookupAttributesOnly)                      { $scriptParams.LookupAttributesOnly        = $true }
 if ($UnusedOnly)                                { $scriptParams.UnusedOnly                  = $true }
 if ($IncludeAuditDisabledColumns)               { $scriptParams.IncludeAuditDisabledColumns = $true }
