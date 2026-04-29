@@ -350,16 +350,18 @@ if ($CombineToXlsx) {
         $excel.ScreenUpdating = $false
 
         try {
-            # Sheet build order: README first, then computed joins, then raw CSVs
-            $sheetSpecs = @(
-                @{ Name='README';        File=$readmePath;  IsMarkdown=$true }
-                @{ Name='Master';        File=$masterPath;  IsMarkdown=$false }
-                @{ Name='Tables';        File=$tablesPath;  IsMarkdown=$false }
-                @{ Name='Cleanup';       File=$cleanupPath; IsMarkdown=$false }
-            )
+            # Sheet build order: README first, then computed joins, then raw CSVs.
+            # Use a typed list (not [Object[]] += hashtable) because PowerShell 7 prefers
+            # hashtable's op_Addition (merge) over array growth when the RHS is a hashtable,
+            # which throws "does not contain a method named 'op_Addition'".
+            $sheetSpecs = New-Object System.Collections.Generic.List[hashtable]
+            [void]$sheetSpecs.Add(@{ Name='README';  File=$readmePath;  IsMarkdown=$true })
+            [void]$sheetSpecs.Add(@{ Name='Master';  File=$masterPath;  IsMarkdown=$false })
+            [void]$sheetSpecs.Add(@{ Name='Tables';  File=$tablesPath;  IsMarkdown=$false })
+            [void]$sheetSpecs.Add(@{ Name='Cleanup'; File=$cleanupPath; IsMarkdown=$false })
             foreach ($name in $reportPatterns.Keys) {
                 if ($datasetFiles[$name]) {
-                    $sheetSpecs += @{ Name=$name; File=$datasetFiles[$name]; IsMarkdown=$false }
+                    [void]$sheetSpecs.Add(@{ Name=$name; File=$datasetFiles[$name]; IsMarkdown=$false })
                 }
             }
 
