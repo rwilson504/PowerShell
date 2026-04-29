@@ -88,7 +88,16 @@ param (
     [switch]$AutoDetectUserLookups,
 
     [Parameter(Mandatory = $false)]
-    [string[]]$UserLookupAttributes
+    [string[]]$UserLookupAttributes,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$BuildWorkbook,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$CombineToXlsx,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$OpenAfterBuild
 )
 
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
@@ -113,6 +122,9 @@ if ($CustomEntitiesOnly)                                          { $scriptParam
 if ($AuditDaysBack -gt 0)                                         { $scriptParams.AuditDaysBack         = $AuditDaysBack }
 if ($AutoDetectUserLookups)                                       { $scriptParams.AutoDetectUserLookups = $true }
 if ($UserLookupAttributes -and $UserLookupAttributes.Count -gt 0) { $scriptParams.UserLookupAttributes  = $UserLookupAttributes }
+if ($BuildWorkbook)                                               { $scriptParams.BuildWorkbook         = $true }
+if ($CombineToXlsx)                                               { $scriptParams.CombineToXlsx         = $true }
+if ($OpenAfterBuild)                                              { $scriptParams.OpenAfterBuild        = $true }
 
 $mainScript = Join-Path $scriptDir "Invoke-DataverseUsageReport.ps1"
 $result = & $mainScript @scriptParams

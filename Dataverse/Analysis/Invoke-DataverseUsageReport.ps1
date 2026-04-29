@@ -112,7 +112,16 @@ param (
     [switch]$AutoDetectUserLookups,
 
     [Parameter(Mandatory = $false)]
-    [string[]]$UserLookupAttributes
+    [string[]]$UserLookupAttributes,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$BuildWorkbook,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$CombineToXlsx,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$OpenAfterBuild
 )
 
 if (-not $Tables -and -not $SolutionUniqueName) {
@@ -233,6 +242,16 @@ $summary | Format-Table Name, Status, ElapsedSec, @{N='SizeKB';E={ if ($_.Path -
 $totalSec = ($summary | Measure-Object ElapsedSec -Sum).Sum
 Write-Host "Total elapsed: $([math]::Round($totalSec,1))s" -ForegroundColor Cyan
 Write-Host "Output folder: $outDir`n" -ForegroundColor Green
+
+# Optionally build the joined workbook
+if ($BuildWorkbook -or $CombineToXlsx -or $OpenAfterBuild) {
+    Write-Host "`n--- Building workbook ---" -ForegroundColor Cyan
+    $buildScript = Join-Path $scriptDir 'Build-UsageReportWorkbook.ps1'
+    $buildParams = @{ InputFolder = $outDir }
+    if ($CombineToXlsx)   { $buildParams.CombineToXlsx  = $true }
+    if ($OpenAfterBuild)  { $buildParams.OpenAfterBuild = $true }
+    & $buildScript @buildParams | Out-Null
+}
 
 return [PSCustomObject]@{
     OutputFolder = $outDir
