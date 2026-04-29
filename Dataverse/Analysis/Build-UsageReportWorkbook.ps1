@@ -365,24 +365,53 @@ if ($CombineToXlsx) {
                 }
             }
 
-            $wb = $excel.Workbooks.Add()
-            # Excel.Application.Add() yields a workbook with one default sheet; rename + reuse
-            $defaultSheet = $wb.Worksheets.Item(1)
+            # Helper to surface exact location of any COM failure (the default error message
+            # often loses context inside the COM interop stack).
+            function _Step ([string]$Label, [scriptblock]$Action) {
+                try { return & $Action }
+                catch {
+                    throw "Failed during '$Label': $($_.Exception.Message)"
+                }
+            }
 
+            $wb = _Step "Workbooks.Add" { $excel.Workbooks.Add() }
+
+            # Pre-create all sheets up front using the simplest signature (no Before/After
+            # positioning). Reuse the default first sheet for the first spec; insert the rest
+            # at the end one by one. Avoid the [Reflection.Missing]::Value + Worksheets.Item
+            # combo that PowerShell 7 sometimes mis-marshals as an Object[] arg pair.
+            $sheets = New-Object System.Collections.Generic.List[object]
             for ($i = 0; $i -lt $sheetSpecs.Count; $i++) {
                 $spec = $sheetSpecs[$i]
                 if ($i -eq 0) {
-                    $sheet = $defaultSheet
-                } else {
-                    $sheet = $wb.Worksheets.Add([System.Reflection.Missing]::Value, $wb.Worksheets.Item($wb.Worksheets.Count))
+                    # Reuse the default first sheet that comes with a new workbook
+                    $sheet = _Step "Worksheets.Item(1)" { $wb.Worksheets.Item(1) }
                 }
-                $sheet.Name = $spec.Name
+                else {
+                    # Add at the end of the workbook. The Add() with no args inserts a new
+                    # sheet BEFORE the active sheet; we then move it to the end so the order
+                    # matches our spec.
+                    $sheet = _Step "Worksheets.Add (sheet '$($spec.Name)')" { $wb.Worksheets.Add() }
+                    $lastIdx = _Step "Worksheets.Count" { $wb.Worksheets.Count }
+                    $lastSheet = _Step "Worksheets.Item($lastIdx)" { $wb.Worksheets.Item($lastIdx) }
+                    _Step "$($spec.Name).Move(after lastSheet)" { $sheet.Move($null, $lastSheet) | Out-Null }
+                }
+                _Step "$($spec.Name).Name=" { $sheet.Name = $spec.Name }
+                $sheets.Add($sheet) | Out-Null
+            }
+
+            # Populate each sheet
+            for ($i = 0; $i -lt $sheetSpecs.Count; $i++) {
+                $spec  = $sheetSpecs[$i]
+                $sheet = $sheets[$i]
 
                 if ($spec.IsMarkdown) {
                     # Drop the README markdown into column A as text rows
-                    $lines = Get-Content $spec.File
+                    $lines = @(Get-Content $spec.File)
                     for ($j = 0; $j -lt $lines.Count; $j++) {
-                        $sheet.Cells.Item($j + 1, 1).Value2 = $lines[$j]
+                        _Step "$($spec.Name) row $($j+1)" {
+                            $sheet.Cells.Item([int]($j + 1), 1).Value2 = [string]$lines[$j]
+                        }
                     }
                     $sheet.Columns.Item(1).ColumnWidth = 120
                     $sheet.Columns.Item(1).WrapText    = $false
@@ -394,35 +423,45 @@ if ($CombineToXlsx) {
                         $sheet.Cells.Item(1, 1).Value2 = "(empty)"
                         continue
                     }
-                    $headers = $rows[0].PSObject.Properties.Name
+                    $headers  = @($rows[0].PSObject.Properties.Name)
                     $colCount = $headers.Count
                     $rowCount = $rows.Count + 1   # +1 for header
 
                     # Build a 2D object[,] - much faster than per-cell write
                     $matrix = New-Object 'object[,]' $rowCount, $colCount
-                    for ($c = 0; $c -lt $colCount; $c++) { $matrix[0, $c] = $headers[$c] }
+                    for ($c = 0; $c -lt $colCount; $c++) { $matrix[0, $c] = [string]$headers[$c] }
                     for ($r = 0; $r -lt $rows.Count; $r++) {
                         $row = $rows[$r]
                         for ($c = 0; $c -lt $colCount; $c++) {
-                            $matrix[$r + 1, $c] = $row.($headers[$c])
+                            $val = $row.($headers[$c])
+                            $matrix[$r + 1, $c] = if ($null -eq $val) { '' } else { [string]$val }
                         }
                     }
 
-                    $startCell = $sheet.Cells.Item(1, 1)
-                    $endCell   = $sheet.Cells.Item($rowCount, $colCount)
-                    $range     = $sheet.Range($startCell, $endCell)
-                    $range.Value2 = $matrix
+                    $startCell = _Step "$($spec.Name) startCell" { $sheet.Cells.Item(1, 1) }
+                    $endCell   = _Step "$($spec.Name) endCell"   { $sheet.Cells.Item([int]$rowCount, [int]$colCount) }
+                    $range     = _Step "$($spec.Name) Range"     { $sheet.Range($startCell, $endCell) }
+                    _Step "$($spec.Name) Value2 bulk write" { $range.Value2 = $matrix }
 
-                    # Make it a real Excel Table for AutoFilter + Copilot recognition
-                    [void]$sheet.ListObjects.Add(1, $range, $null, 1)   # 1 = xlSrcRange, 1 = xlYes (has headers)
-                    $sheet.ListObjects.Item(1).Name = "$($spec.Name)_tbl"
+                    # Make it a real Excel Table for AutoFilter + Copilot recognition.
+                    # Excel table names can't contain dots, spaces or start with a digit -
+                    # sanitize. Errors here are non-fatal; sheet is still usable as a range.
+                    try {
+                        $tblName = "$($spec.Name)_tbl" -replace '[^A-Za-z0-9_]', '_'
+                        if ($tblName -match '^\d') { $tblName = "_$tblName" }
+                        [void]$sheet.ListObjects.Add(1, $range, [Type]::Missing, 1)   # 1 = xlSrcRange, 1 = xlYes
+                        $sheet.ListObjects.Item(1).Name = $tblName
+                    }
+                    catch {
+                        Write-Warning "Could not promote $($spec.Name) range to Excel Table (cosmetic only): $($_.Exception.Message)"
+                    }
                     $sheet.Columns.AutoFit() | Out-Null
                 }
             }
 
             $xlsxPath = Join-Path $OutputFolder 'UsageReport.xlsx'
             if (Test-Path $xlsxPath) { Remove-Item $xlsxPath -Force }
-            $wb.SaveAs($xlsxPath, 51)   # 51 = xlOpenXMLWorkbook (.xlsx)
+            _Step "SaveAs $xlsxPath" { $wb.SaveAs($xlsxPath, 51) }   # 51 = xlOpenXMLWorkbook (.xlsx)
             $wb.Close($false)
             Write-Host "  $xlsxPath ($([math]::Round((Get-Item $xlsxPath).Length/1KB,1)) KB)" -ForegroundColor Green
         }
