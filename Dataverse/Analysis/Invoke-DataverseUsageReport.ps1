@@ -115,6 +115,12 @@ param (
     [string[]]$UserLookupAttributes,
 
     [Parameter(Mandatory = $false)]
+    [string[]]$UserTargetTables = @('systemuser'),
+
+    [Parameter(Mandatory = $false)]
+    [hashtable]$CustomTargetNameColumns,
+
+    [Parameter(Mandatory = $false)]
     [switch]$BuildWorkbook,
 
     [Parameter(Mandatory = $false)]
@@ -227,6 +233,8 @@ $summary.Add((Invoke-Report -Name 'UIPresence'        -Script 'GetFieldUIPresenc
 $uaParams = @{}
 if ($AutoDetectUserLookups)                           { $uaParams.AutoDetectUserLookups = $true }
 if ($UserLookupAttributes -and $UserLookupAttributes.Count -gt 0) { $uaParams.UserLookupAttributes = $UserLookupAttributes }
+if ($UserTargetTables -and ($UserTargetTables.Count -gt 1 -or $UserTargetTables[0] -ne 'systemuser')) { $uaParams.UserTargetTables = $UserTargetTables }
+if ($CustomTargetNameColumns -and $CustomTargetNameColumns.Count -gt 0) { $uaParams.CustomTargetNameColumns = $CustomTargetNameColumns }
 $summary.Add((Invoke-Report -Name 'UserActivity'      -Script 'GetUserActivityByTable.ps1'  -OutputFile "useractivity_$timestamp.csv"     -ExtraParams $uaParams))
 
 # ---- 8. Audit history (audit-table scan; can be slow; biggest payload) -------

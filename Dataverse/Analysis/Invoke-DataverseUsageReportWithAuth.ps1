@@ -91,6 +91,12 @@ param (
     [string[]]$UserLookupAttributes,
 
     [Parameter(Mandatory = $false)]
+    [string[]]$UserTargetTables = @('systemuser'),
+
+    [Parameter(Mandatory = $false)]
+    [hashtable]$CustomTargetNameColumns,
+
+    [Parameter(Mandatory = $false)]
     [switch]$BuildWorkbook,
 
     [Parameter(Mandatory = $false)]
@@ -122,6 +128,8 @@ if ($CustomEntitiesOnly)                                          { $scriptParam
 if ($AuditDaysBack -gt 0)                                         { $scriptParams.AuditDaysBack         = $AuditDaysBack }
 if ($AutoDetectUserLookups)                                       { $scriptParams.AutoDetectUserLookups = $true }
 if ($UserLookupAttributes -and $UserLookupAttributes.Count -gt 0) { $scriptParams.UserLookupAttributes  = $UserLookupAttributes }
+if ($UserTargetTables -and ($UserTargetTables.Count -gt 1 -or $UserTargetTables[0] -ne 'systemuser')) { $scriptParams.UserTargetTables = $UserTargetTables }
+if ($CustomTargetNameColumns -and $CustomTargetNameColumns.Count -gt 0) { $scriptParams.CustomTargetNameColumns = $CustomTargetNameColumns }
 if ($BuildWorkbook)                                               { $scriptParams.BuildWorkbook         = $true }
 if ($CombineToXlsx)                                               { $scriptParams.CombineToXlsx         = $true }
 if ($OpenAfterBuild)                                              { $scriptParams.OpenAfterBuild        = $true }
