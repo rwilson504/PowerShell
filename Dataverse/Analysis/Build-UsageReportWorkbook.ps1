@@ -478,29 +478,44 @@ if ($CombineToXlsx) {
                     $colCount = $headers.Count
                     $rowCount = $rows.Count + 1   # +1 for header
 
-                    # Build a 2D object[,] - much faster than per-cell write.
-                    # NOTE the parens around ($r + 1) below: in PowerShell the comma
-                    # operator binds tighter than +, so `$matrix[$r + 1, $c]` would parse
-                    # as `$matrix[ $r + (1, $c) ]` and throw "Object[] does not contain a
-                    # method named 'op_Addition'" on the very first iteration.
-                    $matrix = New-Object 'object[,]' $rowCount, $colCount
-                    for ($c = 0; $c -lt $colCount; $c++) { $matrix[0, $c] = [string]$headers[$c] }
+                    # Helper: 1->A, 26->Z, 27->AA, etc. (Excel column-letter math).
+                    function _ColLetter([int]$n) {
+                        $s = ''
+                        while ($n -gt 0) {
+                            $rem = ($n - 1) % 26
+                            $s = [char](65 + $rem) + $s
+                            $n = [int][Math]::Floor(($n - 1) / 26)
+                        }
+                        return $s
+                    }
+                    $lastColLetter = _ColLetter $colCount
+
+                    # Bulk write ROW BY ROW with 1D arrays. This sidesteps a PS 7 + Excel
+                    # COM bug where assigning an Object[,] to Range.Value2 fails with
+                    # "Unable to cast Object[,] to String" - the IDispatch resolver picks a
+                    # String-typed setter overload. 1D arrays marshal cleanly as SAFEARRAYs.
+                    # The leading comma (`,$rowVals`) keeps PS from unrolling the array
+                    # back into pipeline output before the COM call.
+
+                    # Header row
+                    $headerVals = New-Object 'object[]' $colCount
+                    for ($c = 0; $c -lt $colCount; $c++) { $headerVals[$c] = [string]$headers[$c] }
+                    $sheet.Range("A1:${lastColLetter}1").Value2 = , $headerVals
+
+                    # Data rows
                     for ($r = 0; $r -lt $rows.Count; $r++) {
                         $row = $rows[$r]
-                        $rowIndex = $r + 1
+                        $rowVals = New-Object 'object[]' $colCount
                         for ($c = 0; $c -lt $colCount; $c++) {
                             $val = $row.($headers[$c])
-                            $matrix[$rowIndex, $c] = if ($null -eq $val) { '' } else { [string]$val }
+                            $rowVals[$c] = if ($null -eq $val) { '' } else { [string]$val }
                         }
+                        $excelRow = $r + 2
+                        $sheet.Range("A${excelRow}:${lastColLetter}${excelRow}").Value2 = , $rowVals
                     }
 
-                    # Build the destination range via Resize from A1. `$sheet.Range(start,end)`
-                    # via PS COM sometimes resolves to a single cell (returning the address
-                    # as a string), which then fails Value2 assignment with
-                    # "Unable to cast Object[,] to String". Cells.Item(1,1).Resize(r,c) is
-                    # the unambiguous single-overload pattern for bulk writes.
-                    $range = $sheet.Cells.Item(1, 1).Resize([int]$rowCount, [int]$colCount)
-                    $range.Value2 = $matrix
+                    # Re-grab the full range as a single object for ListObjects.Add below
+                    $range = $sheet.Range("A1:${lastColLetter}${rowCount}")
 
                     # Make it a real Excel Table for AutoFilter + Copilot recognition.
                     # Excel table names can't contain dots, spaces or start with a digit -
