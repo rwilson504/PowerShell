@@ -50,6 +50,24 @@
     Example: -UserTargetTables 'systemuser','contact'  (covers internal users + portal
     contacts in the same report).
 
+.PARAMETER CustomTargetNameColumns
+    Hashtable that tells the script which column to use for the display name (and optionally
+    other columns) when looking up a CUSTOM target table. Built-in handling exists for
+    systemuser (fullname), contact (fullname / emailaddress1 / statecode), and account
+    (name / emailaddress1 / statecode); use this parameter only for tables outside that list.
+
+    Each value can be either a single column name (used as the display name) or another
+    hashtable with NameColumn / EmailColumn / StateColumn / IdColumn / EntitySetName keys to
+    fully control the lookup. Unspecified keys fall back to convention
+    (IdColumn = '<table>id', EntitySetName = '<table>s').
+
+    Example:
+      -UserTargetTables 'systemuser','msf_person','msf_team' `
+      -CustomTargetNameColumns @{
+          'msf_person' = 'msf_displayname'                                 # short form: just the name col
+          'msf_team'   = @{ NameColumn='msf_teamname'; EmailColumn='msf_distroemail'; EntitySetName='msf_teams' }
+      }
+
 .PARAMETER AutoDetectUserLookups
     When set, the script auto-discovers EVERY Lookup attribute on each table whose Targets
     include any of the -UserTargetTables and includes them all. Saves you from having to
@@ -134,6 +152,9 @@ param (
 
     [Parameter(Mandatory = $false)]
     [string[]]$UserTargetTables = @('systemuser'),
+
+    [Parameter(Mandatory = $false)]
+    [hashtable]$CustomTargetNameColumns,
 
     [Parameter(Mandatory = $false)]
     [switch]$AutoDetectUserLookups,
@@ -384,8 +405,10 @@ function Get-UserDirectory {
         tables (systemuser, contact, account, etc.) and returns
         @{ "<targetEntity>|<guid>" -> @{ DisplayName; DomainName; IsDisabled; IsServiceAccount } }.
         For non-systemuser tables IsDisabled / IsServiceAccount are best-effort and may be empty.
+        Custom person tables can be supported via -CustomColumns hashtable (see param doc on
+        the script-level -CustomTargetNameColumns parameter).
     #>
-    param ([string]$OrgUrl, [hashtable]$Headers, [hashtable]$UserIdsByTarget)
+    param ([string]$OrgUrl, [hashtable]$Headers, [hashtable]$UserIdsByTarget, [hashtable]$CustomColumns)
     $map = @{}
     if (-not $UserIdsByTarget -or $UserIdsByTarget.Count -eq 0) { return $map }
 
@@ -394,28 +417,59 @@ function Get-UserDirectory {
         if ($ids.Count -eq 0) { continue }
 
         # Determine the entity-set name + the relevant select columns for this target type.
+        $emailCol = $null   # Per-target email/domain column for fallback display info
+        $stateCol = $null   # Per-target state column for IsDisabled fallback
+        $nameCol  = $null   # Per-target display-name column
         switch ($target) {
             'systemuser' {
                 $entitySet = 'systemusers'
                 $idCol     = 'systemuserid'
+                $nameCol   = 'fullname'
+                $emailCol  = 'domainname'
                 $selectCols = 'systemuserid,fullname,domainname,isdisabled,accessmode'
             }
             'contact' {
                 $entitySet  = 'contacts'
                 $idCol      = 'contactid'
+                $nameCol    = 'fullname'
+                $emailCol   = 'emailaddress1'
+                $stateCol   = 'statecode'
                 $selectCols = 'contactid,fullname,emailaddress1,statecode'
             }
             'account' {
                 $entitySet  = 'accounts'
                 $idCol      = 'accountid'
+                $nameCol    = 'name'
+                $emailCol   = 'emailaddress1'
+                $stateCol   = 'statecode'
                 $selectCols = 'accountid,name,emailaddress1,statecode'
             }
             default {
-                # Fall back to plural-by-+s convention; user can override behavior by editing
-                # this switch if their custom person table doesn't follow that convention.
-                $entitySet  = $target + 's'
-                $idCol      = $target + 'id'
-                $selectCols = $idCol
+                # Custom table - use -CustomTargetNameColumns spec if provided, else fall back
+                $entitySet = $target + 's'
+                $idCol     = $target + 'id'
+                $nameCol   = $null   # no display name available unless user provided one
+                if ($CustomColumns -and $CustomColumns.ContainsKey($target)) {
+                    $spec = $CustomColumns[$target]
+                    if ($spec -is [string]) {
+                        # Short-form: just the display-name column
+                        $nameCol = $spec
+                    }
+                    elseif ($spec -is [hashtable]) {
+                        if ($spec.ContainsKey('EntitySetName')) { $entitySet = $spec.EntitySetName }
+                        if ($spec.ContainsKey('IdColumn'))      { $idCol     = $spec.IdColumn }
+                        if ($spec.ContainsKey('NameColumn'))    { $nameCol   = $spec.NameColumn }
+                        if ($spec.ContainsKey('EmailColumn'))   { $emailCol  = $spec.EmailColumn }
+                        if ($spec.ContainsKey('StateColumn'))   { $stateCol  = $spec.StateColumn }
+                    }
+                }
+                # Build $select dynamically
+                $cols = New-Object System.Collections.Generic.List[string]
+                [void]$cols.Add($idCol)
+                if ($nameCol)  { [void]$cols.Add($nameCol) }
+                if ($emailCol) { [void]$cols.Add($emailCol) }
+                if ($stateCol) { [void]$cols.Add($stateCol) }
+                $selectCols = ($cols | Select-Object -Unique) -join ','
             }
         }
 
@@ -432,14 +486,12 @@ function Get-UserDirectory {
                 foreach ($u in $r.value) {
                     $id = $u.$idCol
                     $display = $null
-                    if ($u.PSObject.Properties['fullname'] -and $u.fullname) { $display = $u.fullname }
-                    elseif ($u.PSObject.Properties['name'] -and $u.name)     { $display = $u.name }
+                    if ($nameCol -and $u.PSObject.Properties[$nameCol] -and $u.$nameCol) { $display = $u.$nameCol }
                     $domainOrEmail = $null
-                    if ($u.PSObject.Properties['domainname'] -and $u.domainname)       { $domainOrEmail = $u.domainname }
-                    elseif ($u.PSObject.Properties['emailaddress1'] -and $u.emailaddress1) { $domainOrEmail = $u.emailaddress1 }
+                    if ($emailCol -and $u.PSObject.Properties[$emailCol] -and $u.$emailCol) { $domainOrEmail = $u.$emailCol }
                     $isDisabled = $null
                     if ($u.PSObject.Properties['isdisabled'])  { $isDisabled = [bool]$u.isdisabled }
-                    elseif ($u.PSObject.Properties['statecode']) { $isDisabled = ([int]$u.statecode -ne 0) }
+                    elseif ($stateCol -and $u.PSObject.Properties[$stateCol]) { $isDisabled = ([int]$u.$stateCol -ne 0) }
                     $isService = $false
                     if ($target -eq 'systemuser' -and $u.PSObject.Properties['accessmode']) {
                         $isService = ([int]$u.accessmode -eq 4)
@@ -556,7 +608,7 @@ try {
 
         $totalIdRefs = ($idsByTarget.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
         Write-Host "  Looking up directory data for $totalIdRefs total user-record reference(s) across $($idsByTarget.Count) target table(s)..." -ForegroundColor Gray
-        $userDir = Get-UserDirectory -OrgUrl $OrganizationUrl -Headers $headers -UserIdsByTarget $idsByTarget
+        $userDir = Get-UserDirectory -OrgUrl $OrganizationUrl -Headers $headers -UserIdsByTarget $idsByTarget -CustomColumns $CustomTargetNameColumns
 
         # Emit output rows
         foreach ($attr in $selected) {
@@ -603,6 +655,11 @@ try {
                     $dirKey = "$($r.TargetEntity)|$($r.UserId)"
                     if ($userDir.ContainsKey($dirKey)) { $u = $userDir[$dirKey] }
                 }
+                # Prefer the directory-resolved display name when available (handles custom
+                # person tables whose lookup didn't expose a name attribute and so the
+                # FetchXML formatted value falls back to the GUID).
+                $resolvedDisplay = if ($u -and $u.DisplayName) { $u.DisplayName } else { $r.UserName }
+
                 $allResults.Add([PSCustomObject][ordered]@{
                     TableLogicalName     = $logicalName
                     TableDisplayName     = $meta.DisplayName
@@ -615,7 +672,7 @@ try {
                     LookupTargets        = $attr.Targets
                     UserTargetEntity     = $r.TargetEntity
                     UserId               = $r.UserId
-                    UserDisplayName      = $r.UserName
+                    UserDisplayName      = $resolvedDisplay
                     UserDomainName       = if ($u) { $u.DomainName } else { '' }
                     IsDisabled           = if ($u) { $u.IsDisabled } else { '' }
                     IsServiceAccount     = if ($u) { $u.IsServiceAccount } else { '' }
