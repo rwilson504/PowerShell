@@ -316,10 +316,14 @@ function Get-AuditDataForTable {
     )
 
     $sinceStr = $SinceUtc.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    # Operation 1=Create, 2=Update. Excluding 3 (Delete) - delete audit rows have empty
-    # attributemask anyway and we don't care about field-level activity for deleted records.
+    # Operation 1=Create, 2=Update. Excluding 3 (Delete) - delete audit rows don't tell us
+    # which fields were ever populated, and 4 (Access) is just record-open audit not field-level.
     $filter = "objecttypecode eq '$LogicalName' and createdon ge $sinceStr and (operation eq 1 or operation eq 2)"
-    $select = "createdon,operation,attributemask,_userid_value,objectid"
+    # Lookup columns on the audit table must be referenced as _<name>_value in OData
+    # ($select with bare 'objectid' / 'userid' returns 400 Bad Request).
+    # Includes 'changedata' because Update operations leave attributemask empty and put
+    # the changed-attribute info in the changedata JSON instead.
+    $select = "createdon,operation,attributemask,changedata,_userid_value,_objectid_value"
     $url = "$OrgUrl/api/data/v9.2/audits?" +
         "`$filter=$([System.Uri]::EscapeDataString($filter))" +
         "&`$select=$select" +
@@ -340,8 +344,9 @@ function Get-AuditDataForTable {
                 createdon     = $row.createdon
                 operation     = $row.operation
                 attributemask = $row.attributemask
+                changedata    = $row.changedata
                 userid        = $row.'_userid_value'
-                objectid      = $row.objectid
+                objectid      = $row.'_objectid_value'
             })
         }
         $page++
@@ -479,12 +484,52 @@ try {
 
             # Aggregate. Audit rows are sorted createdon desc, so the FIRST time we see a
             # ColumnNumber is its most recent change.
+            #
+            # Two paths to extract per-attribute info from each audit row:
+            #   1. attributemask = comma-separated ColumnNumbers (populated for Create ops,
+            #      sometimes populated for Updates). Resolved via $columnMap.
+            #   2. changedata    = JSON {"changedAttributes":[{"logicalName":"x", ...}]}
+            #      (populated for Update ops; the only signal when attributemask is empty).
+            #      Resolved via attribute LogicalName lookup.
+            # We use BOTH so we don't miss Updates whose attributemask wasn't populated.
+            $logicalNameToColumnNumber = @{}
+            foreach ($attr in $attrs) {
+                if ($null -ne $attr.ColumnNumber) {
+                    $logicalNameToColumnNumber[$attr.LogicalName.ToLowerInvariant()] = [int]$attr.ColumnNumber
+                }
+            }
+
             foreach ($row in $auditRows) {
-                if ([string]::IsNullOrWhiteSpace($row.attributemask)) { continue }
-                $colNums = $row.attributemask -split ',' | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ }
                 $rowDate = if ($row.createdon) { ([datetime]$row.createdon).ToUniversalTime() } else { $null }
 
-                foreach ($cn in $colNums) {
+                # Collect every ColumnNumber this row touched
+                $touchedCols = New-Object System.Collections.Generic.HashSet[int]
+                if (-not [string]::IsNullOrWhiteSpace($row.attributemask)) {
+                    foreach ($cn in ($row.attributemask -split ',' | Where-Object { $_ -match '^\d+$' })) {
+                        [void]$touchedCols.Add([int]$cn)
+                    }
+                }
+                if (-not [string]::IsNullOrWhiteSpace($row.changedata)) {
+                    # changedata is JSON-ish; parse the logicalName values out of it
+                    try {
+                        $cd = $row.changedata | ConvertFrom-Json -ErrorAction Stop
+                        if ($cd -and $cd.PSObject.Properties['changedAttributes']) {
+                            foreach ($ch in $cd.changedAttributes) {
+                                if ($ch.logicalName) {
+                                    $cnFromName = $logicalNameToColumnNumber[$ch.logicalName.ToLowerInvariant()]
+                                    if ($null -ne $cnFromName) { [void]$touchedCols.Add($cnFromName) }
+                                }
+                            }
+                        }
+                    }
+                    catch {
+                        # changedata wasn't JSON (some operations use a plain text format) - skip
+                    }
+                }
+
+                if ($touchedCols.Count -eq 0) { continue }
+
+                foreach ($cn in $touchedCols) {
                     if (-not $auditAggregate.ContainsKey($cn)) {
                         $auditAggregate[$cn] = [PSCustomObject]@{
                             LastCreatedOn   = $row.createdon
