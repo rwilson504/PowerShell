@@ -13,11 +13,12 @@
       1. GetRecordCountByTable.ps1        -> recordcounts_<ts>.csv
       2. GetTableRelationships.ps1        -> relationships_<ts>.csv
       3. GetSolutionMembership.ps1        -> solutionmembership_<ts>.csv
-      4. GetTableUsageActivity.ps1        -> tableusage_<ts>.csv
-      5. GetFieldFillRateByTable.ps1      -> attributeusage_<ts>.csv
-      6. GetFieldUIPresence.ps1           -> uipresence_<ts>.csv
-      7. GetUserActivityByTable.ps1       -> useractivity_<ts>.csv
-      8. GetAttributeAuditHistory.ps1     -> audithistory_<ts>.csv
+      4. GetSitemapEntityPresence.ps1     -> sitemappresence_<ts>.csv
+      5. GetTableUsageActivity.ps1        -> tableusage_<ts>.csv
+      6. GetFieldFillRateByTable.ps1      -> attributeusage_<ts>.csv
+      7. GetFieldUIPresence.ps1           -> uipresence_<ts>.csv
+      8. GetUserActivityByTable.ps1       -> useractivity_<ts>.csv
+      9. GetAttributeAuditHistory.ps1     -> audithistory_<ts>.csv
 
     Use -Skip to omit any subset (e.g. -Skip Audit,UserActivity for a metadata-only run).
 
@@ -92,7 +93,7 @@ param (
     [string]$OutputRoot = (Get-Location).Path,
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet('RecordCounts','Relationships','SolutionMembership','TableUsage','AttributeUsage','UIPresence','UserActivity','Audit')]
+    [ValidateSet('RecordCounts','Relationships','SolutionMembership','SitemapPresence','TableUsage','AttributeUsage','UIPresence','UserActivity','Audit')]
     [string[]]$Skip,
 
     [Parameter(Mandatory = $false)]
@@ -220,7 +221,11 @@ $summary.Add((Invoke-Report -Name 'Relationships'     -Script 'GetTableRelations
 # ---- 3. Solution membership (cheap; useful for cleanup-impact analysis) ------
 $summary.Add((Invoke-Report -Name 'SolutionMembership' -Script 'GetSolutionMembership.ps1'  -OutputFile "solutionmembership_$timestamp.csv"))
 
-# ---- 4. Table-level activity (FetchXML aggregates; medium cost per table) ----
+# ---- 4. Sitemap presence (one call per app; cheap; "is this table user-facing?") ----
+#       Runs even when -Tables / -SolutionUniqueName aren't supplied (it scans all apps).
+$summary.Add((Invoke-Report -Name 'SitemapPresence'   -Script 'GetSitemapEntityPresence.ps1' -OutputFile "sitemappresence_$timestamp.csv"))
+
+# ---- 5. Table-level activity (FetchXML aggregates; medium cost per table) ----
 $summary.Add((Invoke-Report -Name 'TableUsage'        -Script 'GetTableUsageActivity.ps1'   -OutputFile "tableusage_$timestamp.csv"))
 
 # ---- 5. Attribute fill rate (one $batch per chunk; medium cost) -------------

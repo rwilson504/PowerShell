@@ -23,7 +23,7 @@
     Root folder for the output subfolder. Default is the current directory.
 .PARAMETER Skip
     One or more report names to skip: RecordCounts, Relationships, SolutionMembership,
-    TableUsage, AttributeUsage, UIPresence, UserActivity, Audit.
+    SitemapPresence, TableUsage, AttributeUsage, UIPresence, UserActivity, Audit.
 .PARAMETER IncludeLastActivity
     Forwarded to GetRecordCountByTable.
 .PARAMETER ActivityFallback
@@ -68,7 +68,7 @@ param (
     [string]$OutputRoot = (Get-Location).Path,
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet('RecordCounts','Relationships','SolutionMembership','TableUsage','AttributeUsage','UIPresence','UserActivity','Audit')]
+    [ValidateSet('RecordCounts','Relationships','SolutionMembership','SitemapPresence','TableUsage','AttributeUsage','UIPresence','UserActivity','Audit')]
     [string[]]$Skip,
 
     [Parameter(Mandatory = $false)]

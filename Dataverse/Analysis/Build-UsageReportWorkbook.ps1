@@ -91,6 +91,7 @@ $reportPatterns = [ordered]@{
     UIPresence         = 'uipresence_*.csv'
     Relationships      = 'relationships_*.csv'
     SolutionMembership = 'solutionmembership_*.csv'
+    SitemapPresence    = 'sitemappresence_*.csv'
 }
 
 $datasets = @{}
@@ -152,6 +153,17 @@ foreach ($r in $datasets['SolutionMembership']) {
     }
 }
 
+# Sitemap presence: aggregate per-table -> set of distinct apps that surface it.
+# Only Entity-bound SubAreas (TableLogicalName non-empty) participate in this aggregate;
+# non-entity tabs (Dashboard / Url / WebResource) are kept on the raw sheet for drill-down.
+$tableSitemapMap = @{}
+foreach ($r in $datasets['SitemapPresence']) {
+    if ([string]::IsNullOrWhiteSpace($r.TableLogicalName)) { continue }
+    $key = $r.TableLogicalName.ToLowerInvariant()
+    if (-not $tableSitemapMap.ContainsKey($key)) { $tableSitemapMap[$key] = New-Object System.Collections.Generic.List[object] }
+    $tableSitemapMap[$key].Add($r)
+}
+
 # ---- MASTER (one row per attribute) ----
 $master = New-Object System.Collections.Generic.List[object]
 foreach ($a in $datasets['AttributeUsage']) {
@@ -167,16 +179,31 @@ foreach ($a in $datasets['AttributeUsage']) {
     $allManaged     = if ($solMatches.Count -gt 0) { (($solMatches | Where-Object { $_.SolutionIsManaged -eq 'False' }).Count -eq 0) } else { $null }
     $anyCustom      = if ($solMatches.Count -gt 0) { (($solMatches | Where-Object { $_.IsCustomComponent -eq 'True' }).Count -gt 0) } else { $null }
 
-    # DeadFieldScore (0-4)
+    # Table-level sitemap presence (computed once per parent table, then projected onto
+    # every attribute row of that table). Empty if no SitemapPresence CSV was produced.
+    $sitemapMatches = if ($tableSitemapMap.ContainsKey($tblKey)) { $tableSitemapMap[$tblKey] } else { @() }
+    $tableInAnyApp  = $sitemapMatches.Count -gt 0
+    $tableAppNames  = ($sitemapMatches | ForEach-Object { $_.AppDisplayName } | Where-Object { $_ } | Sort-Object -Unique) -join ';'
+    $tableAppCount  = ($sitemapMatches | ForEach-Object { $_.AppUniqueName } | Where-Object { $_ } | Sort-Object -Unique).Count
+
+    # DeadFieldScore (0-5).
+    # +1 for each of:
+    #   1. FillRatePercent = 0
+    #   2. No audit events in window
+    #   3. AnyUIPresence = False (forms/views/charts)
+    #   4. All containing solutions are unmanaged (you can actually delete it)
+    #   5. The parent TABLE isn't surfaced in any model-driven app sitemap
     $fillRateNum = if ($a.FillRatePercent -eq 'N/A') { $null } else { [double]$a.FillRatePercent }
-    $hasNoData   = ($null -ne $fillRateNum -and $fillRateNum -eq 0)
-    $notTouched  = (-not $aud) -or [string]::IsNullOrWhiteSpace($aud.LastAuditedOn)
-    $notInUI     = $ui -and ($ui.AnyUIPresence -eq 'False')
+    $hasNoData     = ($null -ne $fillRateNum -and $fillRateNum -eq 0)
+    $notTouched    = (-not $aud) -or [string]::IsNullOrWhiteSpace($aud.LastAuditedOn)
+    $notInUI       = $ui -and ($ui.AnyUIPresence -eq 'False')
+    $notInSitemap  = ($datasets['SitemapPresence'].Count -gt 0) -and (-not $tableInAnyApp)
     $deadScore   = 0
     if ($hasNoData)            { $deadScore++ }
     if ($notTouched)           { $deadScore++ }
     if ($notInUI)              { $deadScore++ }
     if ($allManaged -eq $false){ $deadScore++ }
+    if ($notInSitemap)         { $deadScore++ }
 
     $master.Add([PSCustomObject][ordered]@{
         TableLogicalName        = $a.TableLogicalName
@@ -204,6 +231,9 @@ foreach ($a in $datasets['AttributeUsage']) {
         ViewCount               = if ($ui) { $ui.ViewCount }     else { '' }
         OnAnyChart              = if ($ui) { $ui.OnAnyChart }    else { '' }
         AnyUIPresence           = if ($ui) { $ui.AnyUIPresence } else { '' }
+        TableInAnyAppSitemap    = $tableInAnyApp
+        TableAppCount           = $tableAppCount
+        TableAppNames           = $tableAppNames
         SolutionsContainingAttr = $solUniqueNames
         SolutionsAllManaged     = $allManaged
         SolutionsAnyCustom      = $anyCustom
@@ -224,6 +254,9 @@ foreach ($t in ($allTableNames | Sort-Object)) {
     $rc = if ($rcMap.ContainsKey($t)) { $rcMap[$t] } else { $null }
     $tu = if ($tuMap.ContainsKey($t)) { $tuMap[$t] } else { $null }
     $sols = if ($tableSolMap.ContainsKey($t)) { ($tableSolMap[$t] | ForEach-Object { $_.SolutionUniqueName } | Sort-Object -Unique) -join ';' } else { '' }
+    $smMatches = if ($tableSitemapMap.ContainsKey($t)) { $tableSitemapMap[$t] } else { @() }
+    $appNames  = ($smMatches | ForEach-Object { $_.AppDisplayName } | Where-Object { $_ } | Sort-Object -Unique) -join ';'
+    $appCount  = ($smMatches | ForEach-Object { $_.AppUniqueName } | Where-Object { $_ } | Sort-Object -Unique).Count
     $tablesRollup.Add([PSCustomObject][ordered]@{
         TableLogicalName            = if ($rc) { $rc.TableLogicalName }   elseif ($tu) { $tu.TableLogicalName }   else { $t }
         TableDisplayName            = if ($rc) { $rc.TableDisplayName }   elseif ($tu) { $tu.TableDisplayName }   else { '' }
@@ -242,6 +275,9 @@ foreach ($t in ($allTableNames | Sort-Object)) {
         DistinctCreators            = if ($tu) { $tu.DistinctCreators }   else { '' }
         DistinctModifiers           = if ($tu) { $tu.DistinctModifiers }  else { '' }
         DistinctOwners              = if ($tu) { $tu.DistinctOwners }     else { '' }
+        InAnyAppSitemap             = ($smMatches.Count -gt 0)
+        AppCount                    = $appCount
+        AppNames                    = $appNames
         ContainingSolutions         = $sols
     })
 }
@@ -295,13 +331,16 @@ $dictionary = @(
     [PSCustomObject]@{ Sheet='Master'; Column='ViewCount';               Source='uipresence';     Description='Number of distinct system views that reference this column.' }
     [PSCustomObject]@{ Sheet='Master'; Column='OnAnyChart';              Source='uipresence';     Description='True/False. True if this column appears in at least one chart datadescription.' }
     [PSCustomObject]@{ Sheet='Master'; Column='AnyUIPresence';           Source='uipresence';     Description='True/False composite. True when ANY of OnAnyForm / OnAnyView / OnAnyChart is True. False = the column is invisible everywhere in the UI - the strongest "dead field" signal.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TableInAnyAppSitemap';    Source='sitemappresence'; Description='True/False. True when this column''s parent TABLE is surfaced in at least one model-driven app sitemap (Area/Group/SubArea Entity binding). False = no app exposes the table to end users - automation-only / hidden table.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TableAppCount';           Source='sitemappresence'; Description='How many distinct model-driven apps surface the parent table.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TableAppNames';           Source='sitemappresence'; Description='Semicolon-separated friendly names of the apps surfacing the parent table.' }
     [PSCustomObject]@{ Sheet='Master'; Column='SolutionsContainingAttr'; Source='solutionmembership'; Description='Semicolon-separated unique-names of every solution that ships this column as an Attribute component.' }
     [PSCustomObject]@{ Sheet='Master'; Column='SolutionsAllManaged';     Source='solutionmembership'; Description='True if EVERY containing solution is managed (you cannot delete the column directly). False if at least one is unmanaged. Empty if not in any solution.' }
     [PSCustomObject]@{ Sheet='Master'; Column='SolutionsAnyCustom';      Source='solutionmembership'; Description='True if AT LEAST ONE containing solution component has IsCustomComponent = True. Indicates customer-built vs Microsoft-shipped attribute.' }
     [PSCustomObject]@{ Sheet='Master'; Column='TableNewestModifiedOn';   Source='tableusage';     Description='Most recent modifiedon across the entire table (not just this column). Helps you tell "abandoned table" from "active table with abandoned columns".' }
     [PSCustomObject]@{ Sheet='Master'; Column='TableDistinctCreators';   Source='tableusage';     Description='Distinct count of createdby users across the table. 1 = single-owner table.' }
     [PSCustomObject]@{ Sheet='Master'; Column='TableRecordsLast365Days'; Source='tableusage';     Description='How many records on this table were CREATED in the last 365 days. 0 = no new records in a year (likely abandoned table).' }
-    [PSCustomObject]@{ Sheet='Master'; Column='DeadFieldScore';          Source='computed';       Description='0-4 composite. Adds 1 for each of: FillRatePercent=0; no audit events in window; AnyUIPresence=False; all containing solutions are unmanaged. A custom attribute scoring 3+ is a strong cleanup candidate. Cleanup sheet auto-filters to score >= 2.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='DeadFieldScore';          Source='computed';       Description='0-5 composite. Adds 1 for each of: FillRatePercent=0; no audit events in window; AnyUIPresence=False; all containing solutions are unmanaged; parent table not in any model-driven app sitemap. A custom attribute scoring 3+ is a strong cleanup candidate. Cleanup sheet auto-filters to score >= 2.' }
 
     # ---- tables.csv columns ----
     [PSCustomObject]@{ Sheet='Tables'; Column='TableLogicalName';          Source='recordcounts';   Description='Dataverse logical name of the table.' }
@@ -321,7 +360,25 @@ $dictionary = @(
     [PSCustomObject]@{ Sheet='Tables'; Column='DistinctCreators';          Source='tableusage';     Description='Distinct createdby user count. 1 = automation-only; high = broad org usage.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='DistinctModifiers';         Source='tableusage';     Description='Distinct modifiedby user count.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='DistinctOwners';            Source='tableusage';     Description='Distinct ownerid user count. Empty for organization-owned tables (no per-record owner).' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='InAnyAppSitemap';           Source='sitemappresence'; Description='True/False. True when the table is bound to an Entity SubArea in at least one model-driven app sitemap. False = the table is not user-facing in any app - strong indicator of automation-only / hidden table.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='AppCount';                  Source='sitemappresence'; Description='How many distinct model-driven apps surface this table.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='AppNames';                  Source='sitemappresence'; Description='Semicolon-separated friendly names of the apps surfacing this table.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='ContainingSolutions';       Source='solutionmembership'; Description='Semicolon-separated unique-names of every solution that ships this table as an Entity component.' }
+
+    # ---- SitemapPresence (raw drill-down sheet) columns ----
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='AppUniqueName';     Source='sitemappresence'; Description='Unique name of the model-driven app (appmodule.uniquename).' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='AppDisplayName';    Source='sitemappresence'; Description='Friendly display name of the app (appmodule.name).' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='AppId';             Source='sitemappresence'; Description='appmoduleid GUID.' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='SitemapName';       Source='sitemappresence'; Description='Name of the sitemap record associated with the app.' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='AreaId';            Source='sitemappresence'; Description='Sitemap Area Id attribute.' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='AreaTitle';         Source='sitemappresence'; Description='Sitemap Area title (LCID 1033 preferred).' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='GroupId';           Source='sitemappresence'; Description='Sitemap Group Id attribute.' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='GroupTitle';        Source='sitemappresence'; Description='Sitemap Group title (LCID 1033 preferred).' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='SubAreaId';         Source='sitemappresence'; Description='Sitemap SubArea Id attribute.' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='SubAreaTitle';      Source='sitemappresence'; Description='Sitemap SubArea title (LCID 1033 preferred).' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='SubAreaType';       Source='sitemappresence'; Description='Entity / Dashboard / Url / WebResource / Unknown - what kind of tab the SubArea represents. Only Entity rows have a TableLogicalName.' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='TableLogicalName';  Source='sitemappresence'; Description='Logical name of the table bound to this SubArea (Entity attribute on the SubArea node). Empty for non-Entity tabs. Lowercase. Joins to other sheets.' }
+    [PSCustomObject]@{ Sheet='SitemapPresence'; Column='Url';               Source='sitemappresence'; Description='URL the SubArea opens (only set for non-Entity tabs - dashboards, custom URLs, web resources).' }
 )
 $dictionary | Export-Csv -Path $dictionaryPath -NoTypeInformation
 
@@ -348,22 +405,24 @@ Generated by ``Build-UsageReportWorkbook.ps1`` on top of CSVs produced by
 | ``recordcounts_*.csv``       | ``GetRecordCountByTable.ps1`` |
 | ``relationships_*.csv``      | ``GetTableRelationships.ps1`` |
 | ``solutionmembership_*.csv`` | ``GetSolutionMembership.ps1`` |
+| ``sitemappresence_*.csv``    | ``GetSitemapEntityPresence.ps1`` |
 | ``tableusage_*.csv``         | ``GetTableUsageActivity.ps1`` |
 | ``attributeusage_*.csv``     | ``GetFieldFillRateByTable.ps1`` |
 | ``uipresence_*.csv``         | ``GetFieldUIPresence.ps1`` |
 | ``useractivity_*.csv``       | ``GetUserActivityByTable.ps1`` |
 | ``audithistory_*.csv``       | ``GetAttributeAuditHistory.ps1`` |
 
-## DeadFieldScore (0-4)
+## DeadFieldScore (0-5)
 
 Composite signal in ``master.csv``. Adds 1 for each of:
 
-1. ``FillRatePercent = 0``                   - the field has no data
-2. No audit events found in the audit window - nothing is touching it
-3. ``AnyUIPresence = False``                 - field is not on any form, view, or chart
-4. All containing solutions are unmanaged    - you can actually delete it
+1. ``FillRatePercent = 0``                            - the field has no data
+2. No audit events found in the audit window          - nothing is touching it
+3. ``AnyUIPresence = False``                          - field is not on any form, view, or chart
+4. All containing solutions are unmanaged             - you can actually delete it
+5. Parent table not in any model-driven app sitemap   - the table isn't user-facing at all
 
-A custom attribute scoring 3 or 4 is a strong cleanup candidate. ``cleanup.csv`` shows
+A custom attribute scoring 3+ is a strong cleanup candidate. ``cleanup.csv`` shows
 everything scoring 2+.
 
 ## Recommended Excel workflow
