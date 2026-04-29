@@ -452,31 +452,39 @@ if ($CombineToXlsx) {
             for ($i = 0; $i -lt $sheetCount; $i++) {
                 $wb.Worksheets.Item($i + 1).Name = $sheetSpecs[$i].Name
             }
+            Write-Host "  Allocated $sheetCount sheets." -ForegroundColor DarkGray
 
             # Populate each sheet
+            $buildSw = [System.Diagnostics.Stopwatch]::StartNew()
             for ($i = 0; $i -lt $sheetCount; $i++) {
                 $spec  = $sheetSpecs[$i]
                 $sheet = $wb.Worksheets.Item($i + 1)
+                $sheetSw = [System.Diagnostics.Stopwatch]::StartNew()
 
                 if ($spec.IsMarkdown) {
-                    # Drop the README markdown into column A as text rows
                     $lines = @(Get-Content $spec.File)
+                    Write-Host ("  [{0}/{1}] {2,-22} README markdown ({3} lines)..." -f ($i + 1), $sheetCount, $spec.Name, $lines.Count) -ForegroundColor Cyan
                     for ($j = 0; $j -lt $lines.Count; $j++) {
                         $sheet.Cells.Item([int]($j + 1), 1).Value2 = [string]$lines[$j]
                     }
                     $sheet.Columns.Item(1).ColumnWidth = 120
                     $sheet.Columns.Item(1).WrapText    = $false
+                    $sheetSw.Stop()
+                    Write-Host ("        done in {0:n1}s" -f $sheetSw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
                 }
                 else {
-                    # Read CSV as 2D array and bulk-write to the sheet
                     $rows = @(Import-Csv $spec.File)
                     if ($rows.Count -eq 0) {
                         $sheet.Cells.Item(1, 1).Value2 = "(empty)"
+                        $sheetSw.Stop()
+                        Write-Host ("  [{0}/{1}] {2,-22} (empty CSV)" -f ($i + 1), $sheetCount, $spec.Name) -ForegroundColor DarkGray
                         continue
                     }
                     $headers  = @($rows[0].PSObject.Properties.Name)
                     $colCount = $headers.Count
                     $rowCount = $rows.Count + 1   # +1 for header
+                    $totalCells = $rows.Count * $colCount
+                    Write-Host ("  [{0}/{1}] {2,-22} {3,6:n0} rows x {4,3} cols ({5,7:n0} cells)..." -f ($i + 1), $sheetCount, $spec.Name, $rows.Count, $colCount, $totalCells) -ForegroundColor Cyan
 
                     # Helper: 1->A, 26->Z, 27->AA, etc. (Excel column-letter math).
                     function _ColLetter([int]$n) {
@@ -505,7 +513,11 @@ if ($CombineToXlsx) {
                         $sheet.Cells.Item(1, $c + 1).Value2 = [string]$headers[$c]
                     }
 
-                    # Data rows
+                    # Data rows. Print a progress line periodically so the user can see
+                    # the script is still alive on big sheets (per-cell COM writes are
+                    # unavoidably slow - this is the only reliable path under PS 7).
+                    $progressEvery = [Math]::Max(50, [int]($rows.Count / 20))
+                    $rowSw = [System.Diagnostics.Stopwatch]::StartNew()
                     for ($r = 0; $r -lt $rows.Count; $r++) {
                         $row = $rows[$r]
                         $excelRow = $r + 2
@@ -513,7 +525,14 @@ if ($CombineToXlsx) {
                             $val = $row.($headers[$c])
                             $sheet.Cells.Item($excelRow, $c + 1).Value2 = if ($null -eq $val) { '' } else { [string]$val }
                         }
+                        if ((($r + 1) % $progressEvery) -eq 0) {
+                            $pct = [int]((($r + 1) / $rows.Count) * 100)
+                            $rate = if ($rowSw.Elapsed.TotalSeconds -gt 0) { ($r + 1) / $rowSw.Elapsed.TotalSeconds } else { 0 }
+                            $remaining = if ($rate -gt 0) { ($rows.Count - ($r + 1)) / $rate } else { 0 }
+                            Write-Host ("        {0,5:n0}/{1,-5:n0} rows ({2,3}%, {3,5:n0} rows/sec, ~{4,3:n0}s left)" -f ($r + 1), $rows.Count, $pct, $rate, $remaining) -ForegroundColor DarkGray
+                        }
                     }
+                    $rowSw.Stop()
 
                     $excel.Calculation = -4105   # xlCalculationAutomatic
 
@@ -523,6 +542,7 @@ if ($CombineToXlsx) {
                     # Make it a real Excel Table for AutoFilter + Copilot recognition.
                     # Excel table names can't contain dots, spaces or start with a digit -
                     # sanitize. Errors here are non-fatal; sheet is still usable as a range.
+                    Write-Host "        promoting to Excel Table + AutoFit..." -ForegroundColor DarkGray
                     try {
                         $tblName = "$($spec.Name)_tbl" -replace '[^A-Za-z0-9_]', '_'
                         if ($tblName -match '^\d') { $tblName = "_$tblName" }
@@ -533,14 +553,21 @@ if ($CombineToXlsx) {
                         Write-Warning "Could not promote $($spec.Name) range to Excel Table (cosmetic only): $($_.Exception.Message)"
                     }
                     $sheet.Columns.AutoFit() | Out-Null
+                    $sheetSw.Stop()
+                    Write-Host ("        done in {0:n1}s" -f $sheetSw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
                 }
             }
+            $buildSw.Stop()
+            Write-Host ("  All sheets populated in {0:n1}s." -f $buildSw.Elapsed.TotalSeconds) -ForegroundColor DarkGray
 
             $xlsxPath = Join-Path $OutputFolder 'UsageReport.xlsx'
             if (Test-Path $xlsxPath) { Remove-Item $xlsxPath -Force }
+            Write-Host "  Saving workbook to $xlsxPath ..." -ForegroundColor Cyan
+            $saveSw = [System.Diagnostics.Stopwatch]::StartNew()
             $wb.SaveAs($xlsxPath, 51)   # 51 = xlOpenXMLWorkbook (.xlsx)
             $wb.Close($false)
-            Write-Host "  $xlsxPath ($([math]::Round((Get-Item $xlsxPath).Length/1KB,1)) KB)" -ForegroundColor Green
+            $saveSw.Stop()
+            Write-Host ("  $xlsxPath ($([math]::Round((Get-Item $xlsxPath).Length/1KB,1)) KB, saved in {0:n1}s)" -f $saveSw.Elapsed.TotalSeconds) -ForegroundColor Green
         }
         catch {
             Write-Warning "Excel COM workbook build failed: $($_.Exception.Message)"
