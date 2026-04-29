@@ -26,7 +26,10 @@
     Optional. Restrict analysis to these attribute logical names.
 
 .PARAMETER DaysBack
-    Number of days of audit history to scan. Default 365.
+    Number of days of audit history to scan. Default 365, valid range 1 to 3650 (10 years).
+    The actual ceiling is your environment's audit retention setting (default 30 days, can be
+    raised to ~7 years). If you request more than retention holds, you just see what is still
+    available. The base script reports the configured retention at startup.
 
 .PARAMETER LookupAttributesOnly
     Only emit rows for Lookup attributes - useful for the "unused lookup" detection workflow.

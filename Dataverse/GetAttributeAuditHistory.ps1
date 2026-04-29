@@ -38,9 +38,15 @@
     attribute on the table is reported.
 
 .PARAMETER DaysBack
-    Number of days of audit history to scan. Default 365. Audit retention itself is configured
-    at the org level (default 30 days, max 365+ depending on plan) - if you ask for more days
-    than retention holds, you simply see whatever is still available.
+    Number of days of audit history to scan. Default 365, valid range 1 to 3650 (10 years).
+
+    Important: this is the WINDOW you ASK FOR. The actual ceiling is your environment's audit
+    retention setting (organization.auditretentionperiodv2, default 30 days, configurable up
+    to ~7 years on appropriate plans). If retention is 90 days but you pass -DaysBack 1825,
+    you simply see whatever audit data is still present (i.e. ~90 days).
+
+    The script reports the org's current retention value at startup so you know your real
+    ceiling.
 
 .PARAMETER LookupAttributesOnly
     Only emit rows for attributes whose AttributeType is Lookup. Useful for the "unused
@@ -175,8 +181,11 @@ $OperationLabels = @{
 function Get-OrgAuditEnabled {
     param ([string]$OrgUrl, [hashtable]$Headers)
     try {
-        $r = Invoke-RestMethod -Uri "$OrgUrl/api/data/v9.2/organizations?`$select=isauditenabled" -Headers $Headers
-        return [bool]$r.value[0].isauditenabled
+        $r = Invoke-RestMethod -Uri "$OrgUrl/api/data/v9.2/organizations?`$select=isauditenabled,auditretentionperiodv2" -Headers $Headers
+        return [PSCustomObject]@{
+            IsAuditEnabled  = [bool]$r.value[0].isauditenabled
+            RetentionDays   = $r.value[0].auditretentionperiodv2
+        }
     }
     catch {
         Write-Warning "Could not read org-level audit setting: $_"
@@ -339,20 +348,33 @@ function Get-AuditDataForTable {
 # Main script execution
 try {
     Write-Host "Checking org-level audit setting..." -ForegroundColor Cyan
-    $orgAuditOn = Get-OrgAuditEnabled -OrgUrl $OrganizationUrl -Headers $headers
-    if ($null -eq $orgAuditOn) {
+    $orgAudit = Get-OrgAuditEnabled -OrgUrl $OrganizationUrl -Headers $headers
+    $orgAuditOn = $null
+    if ($null -eq $orgAudit) {
         Write-Warning "Could not determine org-level audit setting; results may be empty."
     }
-    elseif (-not $orgAuditOn) {
-        Write-Host "Org-level auditing is DISABLED. No audit data will be available." -ForegroundColor Yellow
-        Write-Host "  Enable in Power Platform admin center -> Environment -> Settings -> Audit and logs -> Audit settings." -ForegroundColor Yellow
-    }
     else {
-        Write-Host "Org-level auditing is enabled." -ForegroundColor Green
+        $orgAuditOn = $orgAudit.IsAuditEnabled
+        if (-not $orgAuditOn) {
+            Write-Host "Org-level auditing is DISABLED. No audit data will be available." -ForegroundColor Yellow
+            Write-Host "  Enable in Power Platform admin center -> Environment -> Settings -> Audit and logs -> Audit settings." -ForegroundColor Yellow
+        }
+        else {
+            $retentionLabel = if ($null -eq $orgAudit.RetentionDays -or $orgAudit.RetentionDays -le 0) {
+                "(not set; using platform default)"
+            } else {
+                "$($orgAudit.RetentionDays) day(s)"
+            }
+            Write-Host "Org-level auditing is enabled. Audit retention: $retentionLabel" -ForegroundColor Green
+
+            if ($orgAudit.RetentionDays -and $orgAudit.RetentionDays -gt 0 -and $DaysBack -gt $orgAudit.RetentionDays) {
+                Write-Host "  WARNING: -DaysBack=$DaysBack exceeds the configured retention of $($orgAudit.RetentionDays) day(s). You will only see ~$($orgAudit.RetentionDays) day(s) of data." -ForegroundColor Yellow
+            }
+        }
     }
 
     $sinceUtc = (Get-Date).ToUniversalTime().AddDays(-$DaysBack)
-    Write-Host "Audit window: last $DaysBack day(s) (since $($sinceUtc.ToString('yyyy-MM-dd HH:mm:ss UTC')))" -ForegroundColor Cyan
+    Write-Host "Audit window requested: last $DaysBack day(s) (since $($sinceUtc.ToString('yyyy-MM-dd HH:mm:ss UTC')))" -ForegroundColor Cyan
 
     $allResults = New-Object System.Collections.Generic.List[object]
 
