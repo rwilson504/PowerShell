@@ -154,11 +154,27 @@ if ($AppUniqueNames -and $AppUniqueNames.Count -gt 0) {
 }
 
 Write-Host "  Found $($appList.Count) app(s) to scan." -ForegroundColor Green
+if ($appList.Count -eq 0) {
+    Write-Warning "No appmodules matched the filters. If your environment has only draft/unpublished apps, re-run with -IncludeUnpublished."
+}
+else {
+    # Surface componentstate distribution + a few app names so an empty result is
+    # easy to debug. componentstate: 0=Published, 1=Unpublished, 2=Deleted, 3=Deleted Unpublished.
+    $byState = $appList | Group-Object componentstate | Sort-Object Name
+    $stateSummary = ($byState | ForEach-Object { "$($_.Count) state=$($_.Name)" }) -join ', '
+    Write-Host "  componentstate breakdown: $stateSummary" -ForegroundColor Gray
+    $sample = ($appList | Select-Object -First 5 | ForEach-Object { "$($_.uniquename) [state=$($_.componentstate)]" }) -join '; '
+    Write-Host "  Sample apps: $sample" -ForegroundColor Gray
+}
 
 # ---- For each app, fetch its sitemap XML and walk Area/Group/SubArea ---------
 $rows = New-Object System.Collections.Generic.List[object]
 $appsWithSitemap = 0
 $appsWithoutSitemap = 0
+$appsExpandFailed  = 0
+$appsEmptyXml      = 0
+$appsXmlParseFail  = 0
+$appSitemapDetail  = New-Object System.Collections.Generic.List[object]   # for end-of-run drill-down on failures
 
 foreach ($app in $appList) {
     $appLabel = if ($app.uniquename) { $app.uniquename } else { $app.name }
@@ -172,7 +188,9 @@ foreach ($app in $appList) {
     }
     catch {
         Write-Warning "  [$appLabel] Failed to retrieve sitemap: $($_.Exception.Message)"
+        $appsExpandFailed++
         $appsWithoutSitemap++
+        $appSitemapDetail.Add([PSCustomObject]@{ App=$appLabel; Outcome='ExpandFailed'; Detail=$_.Exception.Message }) | Out-Null
         continue
     }
 
@@ -180,17 +198,24 @@ foreach ($app in $appList) {
     if ($detail.appmodule_appsitemap) { $sitemaps = @($detail.appmodule_appsitemap) }
     if ($sitemaps.Count -eq 0) {
         $appsWithoutSitemap++
+        $appSitemapDetail.Add([PSCustomObject]@{ App=$appLabel; Outcome='NoSitemapRows'; Detail='appmodule_appsitemap expand returned 0 rows' }) | Out-Null
         continue
     }
     $appsWithSitemap++
 
     foreach ($sm in $sitemaps) {
-        if ([string]::IsNullOrWhiteSpace($sm.sitemapxml)) { continue }
+        if ([string]::IsNullOrWhiteSpace($sm.sitemapxml)) {
+            $appsEmptyXml++
+            $appSitemapDetail.Add([PSCustomObject]@{ App=$appLabel; Outcome='EmptyXml'; Detail="sitemapname='$($sm.sitemapname)'" }) | Out-Null
+            continue
+        }
         try {
             [xml]$xml = $sm.sitemapxml
         }
         catch {
             Write-Warning "  [$appLabel] sitemap '$($sm.sitemapname)' XML parse failed: $($_.Exception.Message)"
+            $appsXmlParseFail++
+            $appSitemapDetail.Add([PSCustomObject]@{ App=$appLabel; Outcome='XmlParseFail'; Detail=$_.Exception.Message }) | Out-Null
             continue
         }
 
@@ -256,7 +281,28 @@ foreach ($app in $appList) {
 }
 
 Write-Host "  Apps with a sitemap: $appsWithSitemap   Apps without (canvas/legacy/empty): $appsWithoutSitemap" -ForegroundColor Cyan
+if ($appsExpandFailed -gt 0 -or $appsEmptyXml -gt 0 -or $appsXmlParseFail -gt 0) {
+    Write-Host "  Sitemap fetch issues: ExpandFailed=$appsExpandFailed  EmptyXml=$appsEmptyXml  XmlParseFail=$appsXmlParseFail" -ForegroundColor Yellow
+}
 Write-Host "  Sitemap entries emitted: $($rows.Count)" -ForegroundColor Green
+
+# Empty-result hint: when 0 rows come out, point the operator at the most likely
+# causes rather than leaving them to guess.
+if ($rows.Count -eq 0 -and $appList.Count -gt 0) {
+    Write-Warning "No sitemap entries were emitted. Most common causes:"
+    Write-Warning "  1) The signed-in user lacks Read on the appsitemap table -> the appmodule_appsitemap expand returns 0 rows silently."
+    Write-Warning "     Fix: have a System Administrator run this, or grant Read on appsitemap to the user/team."
+    Write-Warning "  2) All apps are Unpublished (componentstate != 0) -> re-run with -IncludeUnpublished."
+    Write-Warning "  3) -Tables / -SolutionUniqueName filtered every entity-bound SubArea out."
+    Write-Warning "     Fix: re-run without those filters to confirm sitemap data exists, then narrow."
+    Write-Warning "  4) The environment uses Modern app designer apps without an appsitemap row (rare)."
+    if ($appSitemapDetail.Count -gt 0) {
+        Write-Host "  First 5 per-app outcomes:" -ForegroundColor DarkGray
+        $appSitemapDetail | Select-Object -First 5 | ForEach-Object {
+            Write-Host "    [$($_.App)] $($_.Outcome): $($_.Detail)" -ForegroundColor DarkGray
+        }
+    }
+}
 
 # ---- Output -------------------------------------------------------------------
 $results = [System.Collections.Generic.List[object]]@($rows |
