@@ -316,7 +316,14 @@ Write-Host "  Cleanup candidates: $(@($cleanup).Count)" -ForegroundColor Gray
 # stays trivially extensible.
 Write-Host "Building summary.." -ForegroundColor Cyan
 
-# Helpers: count rows whose specified column equals a target; tolerate blanks
+# Helpers: count rows whose specified column equals a target; tolerate blanks.
+# IMPORTANT: pass real booleans ($true / $false) when comparing boolean columns,
+# not the strings 'True' / 'False'. PowerShell's -eq with a [bool] LHS coerces
+# the RHS to bool, and ANY non-empty string coerces to $true - so a literal
+# 'False' silently matches every $true row. Use _CountStr for genuinely
+# string-typed columns (CSV-imported IsCustomEntity / IsCustomAttribute), and
+# _CountWhere with $true/$false for in-memory booleans (HasData / IsActive /
+# IsStale / InAnyAppSitemap / SolutionsAllManaged).
 function _CountWhere { param($Rows, [string]$Col, $Value)
     @($Rows | Where-Object { $_.$Col -eq $Value }).Count
 }
@@ -336,12 +343,14 @@ $tableCustom      = _CountWhere $tablesRollup 'IsCustomEntity' 'True'
 $tableSystem      = _CountWhere $tablesRollup 'IsCustomEntity' 'False'
 $tablePctCustom   = if ($tableTotal -gt 0) { [math]::Round(($tableCustom / $tableTotal) * 100, 1) } else { 0 }
 $totalRecords     = _SumLong    $tablesRollup 'RecordCount'
-$tablesWithData   = _CountWhere $tablesRollup 'HasData' 'True'
-$tablesEmpty      = _CountWhere $tablesRollup 'HasData' 'False'
-$tablesActive     = _CountWhere $tablesRollup 'IsActive' 'True'
-$tablesStale      = _CountWhere $tablesRollup 'IsActive' 'False'   # not active = stale or unknown
-$tablesStrictStale= _CountWhere $tablesRollup 'IsStale'  'True'
-$tablesInApp      = _CountWhere $tablesRollup 'InAnyAppSitemap' 'True'
+# HasData / IsActive / IsStale / InAnyAppSitemap are real booleans in-memory.
+# Compare with $true / $false (NOT 'True' / 'False' strings) - see _CountWhere
+# header comment for why string compares silently corrupt boolean column counts.
+$tablesWithData   = _CountWhere $tablesRollup 'HasData'         $true
+$tablesEmpty      = _CountWhere $tablesRollup 'HasData'         $false
+$tablesActive     = _CountWhere $tablesRollup 'IsActive'        $true
+$tablesStrictStale= _CountWhere $tablesRollup 'IsStale'         $true
+$tablesInApp      = _CountWhere $tablesRollup 'InAnyAppSitemap' $true
 
 # UsageBucket distribution (preserve a meaningful order)
 $bucketOrder = @('Active (<=90d)','Dormant (91-365d)','Stale (>365d)','Empty','Unknown','Unsupported')
@@ -373,13 +382,15 @@ function _AddSummary { param([string]$Section, [string]$Metric, $Value, [string]
     }) | Out-Null
 }
 
-_AddSummary 'Overview' 'Generated'                  (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')         'Local time of this workbook build'
-_AddSummary 'Overview' 'Source folder'              (Split-Path -Leaf $InputFolder)                  ''
+# Note: "Generated" / "Source folder" used to live in summary.csv as an Overview
+# section, but that made the Value column mixed-type (date + folder name + ints)
+# which broke Excel SUM/AVG/charts/XLOOKUP. They now ride above the Summary
+# table as banner cells in the workbook only - see $summaryBannerLines below.
 
 _AddSummary 'Tables'   'Total tables'                $tableTotal                                     ''
 _AddSummary 'Tables'   'Custom tables'               $tableCustom                                    "$tablePctCustom% of total"
 _AddSummary 'Tables'   'System tables'               $tableSystem                                    ''
-_AddSummary 'Tables'   'Tables with data (HasData)'  $tablesWithData                                 ''
+_AddSummary 'Tables'   'Tables with data (HasData)'  $tablesWithData                                 'RecordCount > 0'
 _AddSummary 'Tables'   'Empty tables'                $tablesEmpty                                    'RecordCount = 0'
 _AddSummary 'Tables'   'Active (<=90d)'              $tablesActive                                   'IsActive = True'
 _AddSummary 'Tables'   'Stale (>180d)'               $tablesStrictStale                              'IsStale = True'
@@ -404,6 +415,14 @@ _AddSummary 'Attributes' 'Never populated (0%)'      $attrZeroFill              
 _AddSummary 'Cleanup'    'Cleanup candidates'        $cleanupCount                                   'DeadFieldScore >= 2 AND IsCustomAttribute'
 _AddSummary 'Cleanup'    'High-confidence dead'      $dead3Plus                                      'DeadFieldScore >= 3 AND IsCustomAttribute'
 Write-Host "  Summary metrics: $($summary.Count)" -ForegroundColor Gray
+
+# Banner facts shown above the Summary table in the Excel workbook ONLY (kept
+# out of summary.csv so the Value column stays purely numeric - SUM/AVERAGE,
+# charts, and XLOOKUP all behave consistently).
+$summaryBannerLines = @(
+    "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
+    "Source folder: $(Split-Path -Leaf $InputFolder)"
+)
 
 # ---- WRITE OUTPUTS ----
 $masterPath     = Join-Path $OutputFolder 'master.csv'
@@ -502,9 +521,9 @@ $dictionary = @(
     [PSCustomObject]@{ Sheet='SitemapPresence'; Column='Url';               Source='sitemappresence'; Description='URL the SubArea opens (only set for non-Entity tabs - dashboards, custom URLs, web resources).' }
 
     # ---- Summary sheet columns ----
-    [PSCustomObject]@{ Sheet='Summary'; Column='Section'; Source='computed'; Description='Grouping label for the metric (Overview / Tables / UsageBucket / Attributes / Cleanup). Use to filter or PivotTable.' }
+    [PSCustomObject]@{ Sheet='Summary'; Column='Section'; Source='computed'; Description='Grouping label for the metric (Tables / UsageBucket / Attributes / Cleanup). Use to filter or PivotTable.' }
     [PSCustomObject]@{ Sheet='Summary'; Column='Metric';  Source='computed'; Description='Human-readable name of the metric (e.g. "Empty tables", "Active (<=90d)").' }
-    [PSCustomObject]@{ Sheet='Summary'; Column='Value';   Source='computed'; Description='The value for the metric. Numeric for counts / sums; date string for "Generated"; folder name for "Source folder".' }
+    [PSCustomObject]@{ Sheet='Summary'; Column='Value';   Source='computed'; Description='Numeric value for the metric (count / sum). Pure-numeric so SUM/AVERAGE/charts/XLOOKUP work consistently. Generated timestamp + source folder are shown as a banner above the table in the Excel workbook (kept out of the data column to avoid mixed types).' }
     [PSCustomObject]@{ Sheet='Summary'; Column='Notes';   Source='computed'; Description='Optional context (e.g. percent of total, the underlying filter expression, or what the metric excludes).' }
 )
 $dictionary | Export-Csv -Path $dictionaryPath -NoTypeInformation
@@ -675,6 +694,16 @@ if ($CombineToXlsx) {
                     $totalCells = $rows.Count * $colCount
                     Write-Host ("  [{0}/{1}] {2,-22} {3,6:n0} rows x {4,3} cols ({5,7:n0} cells)..." -f ($i + 1), $sheetCount, $spec.Name, $rows.Count, $colCount, $totalCells) -ForegroundColor Cyan
 
+                    # Optional banner above the structured table (Summary sheet only).
+                    # Keeps banner facts (Generated / Source folder) out of the data
+                    # column so SUM/AVERAGE/charts on Value stay numeric.
+                    # $rowOffset = number of rows the banner pushes the header down by
+                    # (banner lines + one blank separator row).
+                    $rowOffset = 0
+                    if ($spec.Name -eq 'Summary' -and $summaryBannerLines -and $summaryBannerLines.Count -gt 0) {
+                        $rowOffset = $summaryBannerLines.Count + 1
+                    }
+
                     # Helper: 1->A, 26->Z, 27->AA, etc. (Excel column-letter math).
                     function _ColLetter([int]$n) {
                         $s = ''
@@ -736,9 +765,20 @@ if ($CombineToXlsx) {
                         [void]$comType.InvokeMember('Value2', $setProp, $null, $Cell, ([object[]]@($Value)))
                     }
 
-                    # Header row
+                    # Header row (offset for the optional banner above)
+                    $headerRow = 1 + $rowOffset
+
+                    # Banner cells (Summary sheet only). Written as plain strings into
+                    # column A; intentionally not included in the ListObject below so
+                    # AutoFilter / Excel Table semantics apply only to the structured rows.
+                    if ($rowOffset -gt 0) {
+                        for ($b = 0; $b -lt $summaryBannerLines.Count; $b++) {
+                            _SetCellValue $sheet.Cells.Item($b + 1, 1) ([string]$summaryBannerLines[$b])
+                        }
+                    }
+
                     for ($c = 0; $c -lt $colCount; $c++) {
-                        _SetCellValue $sheet.Cells.Item(1, $c + 1) ([string]$headers[$c])
+                        _SetCellValue $sheet.Cells.Item($headerRow, $c + 1) ([string]$headers[$c])
                     }
 
                     # Data rows. Print a progress line periodically so the user can see
@@ -748,7 +788,7 @@ if ($CombineToXlsx) {
                     $rowSw = [System.Diagnostics.Stopwatch]::StartNew()
                     for ($r = 0; $r -lt $rows.Count; $r++) {
                         $row = $rows[$r]
-                        $excelRow = $r + 2
+                        $excelRow = $r + 2 + $rowOffset
                         for ($c = 0; $c -lt $colCount; $c++) {
                             $val = $row.($headers[$c])
                             $cell = $sheet.Cells.Item($excelRow, $c + 1)
@@ -813,9 +853,12 @@ if ($CombineToXlsx) {
 
                     $excel.Calculation = -4105   # xlCalculationAutomatic
 
-                    # Apply column-level NumberFormat. Skip the header row (start at row 2).
-                    # Without this, every column reads as "General" - 135023 instead of
-                    # 135,023 and ISO timestamps instead of friendly dates.
+                    # Apply column-level NumberFormat. Skip the header row (start at
+                    # the row immediately below it). Without this, every column reads
+                    # as "General" - 135023 instead of 135,023 and ISO timestamps
+                    # instead of friendly dates.
+                    $firstDataRow = $headerRow + 1
+                    $lastDataRow  = $rowCount + $rowOffset
                     for ($c = 0; $c -lt $colCount; $c++) {
                         $fmt = switch ($colTypes[$c]) {
                             'int'     { '#,##0' }
@@ -825,12 +868,13 @@ if ($CombineToXlsx) {
                         }
                         if ($fmt) {
                             $colLetter = _ColLetter ($c + 1)
-                            $sheet.Range("${colLetter}2:${colLetter}${rowCount}").NumberFormat = $fmt
+                            $sheet.Range("${colLetter}${firstDataRow}:${colLetter}${lastDataRow}").NumberFormat = $fmt
                         }
                     }
 
-                    # Re-grab the full range as a single object for ListObjects.Add below
-                    $range = $sheet.Range("A1:${lastColLetter}${rowCount}")
+                    # Re-grab the structured range (header + data, excludes banner) for
+                    # ListObjects.Add below.
+                    $range = $sheet.Range("A${headerRow}:${lastColLetter}${lastDataRow}")
 
                     # Make it a real Excel Table for AutoFilter + Copilot recognition.
                     # Excel table names can't contain dots, spaces or start with a digit -
