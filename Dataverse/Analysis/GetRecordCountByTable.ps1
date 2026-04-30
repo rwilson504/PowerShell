@@ -687,22 +687,35 @@ function Get-RecordCounts {
             $oldestCreated = $lastActivityMap[$logicalName].OldestRecordCreatedOn
         }
 
-        # Determine status & record count value
+        # Determine status & record count value.
+        # Sentinel policy: RecordCount is either a real non-negative integer or blank.
+        # The Status column captures the reason a count is missing. Numeric sentinels
+        # like "N/A" / -1 poison Excel aggregates and Power Query type inference, so
+        # they are intentionally NOT emitted here. RetrieveTotalRecordCount returns -1
+        # when statistics haven't been computed yet for a table; we surface that as
+        # Status='Stats Not Available' with a blank count.
         if ($skippedTables.ContainsKey($logicalName)) {
             $status      = "Skipped ($($skippedTables[$logicalName]))"
-            $recordCount = "N/A"
+            $recordCount = ''
         }
         elseif ($allCounts.ContainsKey($logicalName)) {
-            $status      = "Success"
-            $recordCount = $allCounts[$logicalName]
+            $rawCount = $allCounts[$logicalName]
+            if ($null -ne $rawCount -and [long]$rawCount -lt 0) {
+                $status      = "Stats Not Available"
+                $recordCount = ''
+            }
+            else {
+                $status      = "Success"
+                $recordCount = $rawCount
+            }
         }
         elseif ($logicalName -in $failedBatches) {
             $status      = "Error"
-            $recordCount = "N/A"
+            $recordCount = ''
         }
         else {
             $status      = "Not Returned by API"
-            $recordCount = "N/A"
+            $recordCount = ''
         }
 
         # Compute Days* metrics and UsageBucket
@@ -731,7 +744,7 @@ function Get-RecordCounts {
             elseif ($status -ne "Success" -and $status -notlike 'Skipped*' -and -not $hasActivityEvidence) {
                 $usageBucket = "Unknown"
             }
-            elseif (-not $hasActivityEvidence -and ($recordCount -eq 0 -or $recordCount -eq "N/A")) {
+            elseif (-not $hasActivityEvidence -and ($recordCount -eq 0 -or [string]::IsNullOrWhiteSpace([string]$recordCount))) {
                 # No timestamps and count is 0 or unavailable -> truly empty (or unknowable)
                 $usageBucket = if ($recordCount -eq 0) { "Empty" } else { "Unknown" }
             }
@@ -828,7 +841,7 @@ try {
                 Write-Host "Results exported to $OutputPath" -ForegroundColor Green
             }
             else {
-                $results | Sort-Object @{Expression={if($_.RecordCount -eq "N/A"){-1}else{[long]$_.RecordCount}}; Descending=$true} | Format-Table -AutoSize
+                $results | Sort-Object @{Expression={if([string]::IsNullOrWhiteSpace([string]$_.RecordCount)){-1}else{[long]$_.RecordCount}}; Descending=$true} | Format-Table -AutoSize
             }
         }
         "CSV" {

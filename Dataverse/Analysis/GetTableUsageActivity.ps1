@@ -202,11 +202,19 @@ try {
         $daysSinceCreated  = if ($newestCreated)  { [math]::Max(0, [int]([math]::Floor(($nowUtc - ([datetime]$newestCreated).ToUniversalTime()).TotalDays))) } else { $null }
         $daysSinceModified = if ($newestModified) { [math]::Max(0, [int]([math]::Floor(($nowUtc - ([datetime]$newestModified).ToUniversalTime()).TotalDays))) } else { $null }
 
+        # OwnershipType: Dataverse returns one of None / UserOwned / TeamOwned /
+        # BusinessOwned / OrganizationOwned / BusinessParented. 'None' is a real enum
+        # value (system / no-owner tables) but feels like a sentinel when mixed into
+        # filters and PivotTables alongside the meaningful categories. Emit blank in
+        # that case so PivotTable category buckets only contain real ownership types.
+        $ownershipType = $meta.OwnershipType
+        if ($ownershipType -and $ownershipType -ieq 'None') { $ownershipType = '' }
+
         $allResults.Add([PSCustomObject][ordered]@{
             TableLogicalName            = $logicalName
             TableDisplayName            = $meta.DisplayName
             TableSchemaName             = $meta.SchemaName
-            OwnershipType               = $meta.OwnershipType
+            OwnershipType               = $ownershipType
             NewestCreatedOn             = $newestCreated
             NewestModifiedOn            = $newestModified
             DaysSinceNewestCreated      = $daysSinceCreated

@@ -193,7 +193,12 @@ foreach ($a in $datasets['AttributeUsage']) {
     #   3. AnyUIPresence = False (forms/views/charts)
     #   4. All containing solutions are unmanaged (you can actually delete it)
     #   5. The parent TABLE isn't surfaced in any model-driven app sitemap
-    $fillRateNum = if ($a.FillRatePercent -eq 'N/A') { $null } else { [double]$a.FillRatePercent }
+    #
+    # FillRatePercent / TotalRecords / PopulatedCount columns are blank when the
+    # upstream call could not produce a value (Status != Success in the source CSV).
+    # Treat blank-or-non-numeric as "unknown" so the score doesn't credit a +1 for
+    # missing data.
+    $fillRateNum = if ([string]::IsNullOrWhiteSpace([string]$a.FillRatePercent)) { $null } else { [double]$a.FillRatePercent }
     $hasNoData     = ($null -ne $fillRateNum -and $fillRateNum -eq 0)
     $notTouched    = (-not $aud) -or [string]::IsNullOrWhiteSpace($aud.LastAuditedOn)
     $notInUI       = $ui -and ($ui.AnyUIPresence -eq 'False')
@@ -257,6 +262,17 @@ foreach ($t in ($allTableNames | Sort-Object)) {
     $smMatches = if ($tableSitemapMap.ContainsKey($t)) { $tableSitemapMap[$t] } else { @() }
     $appNames  = ($smMatches | ForEach-Object { $_.AppDisplayName } | Where-Object { $_ } | Sort-Object -Unique) -join ';'
     $appCount  = ($smMatches | ForEach-Object { $_.AppUniqueName } | Where-Object { $_ } | Sort-Object -Unique).Count
+
+    # Derived boolean flags. These are friendlier to filter on in Excel / Power BI than
+    # re-typing the numeric comparisons in every PivotTable / slicer. Each one is left
+    # blank when the underlying data isn't available, so PivotTables don't bucket
+    # "unknown" alongside True/False.
+    $rcVal = if ($rc) { [string]$rc.RecordCount } else { '' }
+    $hasData = if ([string]::IsNullOrWhiteSpace($rcVal)) { '' } else { ([long]$rcVal -gt 0) }
+    $dslmVal = if ($rc) { [string]$rc.DaysSinceLastModified } else { '' }
+    $isActive = if ([string]::IsNullOrWhiteSpace($dslmVal)) { '' } else { ([int]$dslmVal -le 90) }
+    $isStale  = if ([string]::IsNullOrWhiteSpace($dslmVal)) { '' } else { ([int]$dslmVal -gt 180) }
+
     $tablesRollup.Add([PSCustomObject][ordered]@{
         TableLogicalName            = if ($rc) { $rc.TableLogicalName }   elseif ($tu) { $tu.TableLogicalName }   else { $t }
         TableDisplayName            = if ($rc) { $rc.TableDisplayName }   elseif ($tu) { $tu.TableDisplayName }   else { '' }
@@ -265,9 +281,12 @@ foreach ($t in ($allTableNames | Sort-Object)) {
         IsCustomEntity              = if ($rc) { $rc.IsCustomEntity }     else { '' }
         OwnershipType               = if ($tu) { $tu.OwnershipType }      else { '' }
         RecordCount                 = if ($rc) { $rc.RecordCount }        else { '' }
+        HasData                     = $hasData
         UsageBucket                 = if ($rc) { $rc.UsageBucket }        else { '' }
         LastModifiedOn              = if ($rc) { $rc.LastModifiedOn }     else { '' }
         DaysSinceLastModified       = if ($rc) { $rc.DaysSinceLastModified } else { '' }
+        IsActive                    = $isActive
+        IsStale                     = $isStale
         NewestCreatedOn             = if ($tu) { $tu.NewestCreatedOn }    else { '' }
         RecordsCreatedLast30Days    = if ($tu) { $tu.RecordsCreatedLast30Days }  else { '' }
         RecordsCreatedLast90Days    = if ($tu) { $tu.RecordsCreatedLast90Days }  else { '' }
@@ -289,10 +308,108 @@ $cleanup = $master |
     Sort-Object @{Expression='DeadFieldScore'; Descending=$true}, TableLogicalName, AttributeLogicalName
 Write-Host "  Cleanup candidates: $(@($cleanup).Count)" -ForegroundColor Gray
 
+# ---- SUMMARY (single-screen overview) ----
+# Rolls up the Tables and Master sheets into the metrics you'd build first in any
+# analysis: tables/columns counted, % custom, total record volume, UsageBucket
+# distribution, IsActive/IsStale/HasData distribution, cleanup-candidate counts.
+# Ordered as a (Section, Metric, Value) table so it renders cleanly in Excel and
+# stays trivially extensible.
+Write-Host "Building summary.." -ForegroundColor Cyan
+
+# Helpers: count rows whose specified column equals a target; tolerate blanks
+function _CountWhere { param($Rows, [string]$Col, $Value)
+    @($Rows | Where-Object { $_.$Col -eq $Value }).Count
+}
+function _SumLong { param($Rows, [string]$Col)
+    $total = 0L
+    foreach ($r in $Rows) {
+        $v = $r.$Col
+        if ([string]::IsNullOrWhiteSpace([string]$v)) { continue }
+        $n = 0L
+        if ([long]::TryParse([string]$v, [ref]$n)) { $total += $n }
+    }
+    return $total
+}
+
+$tableTotal       = $tablesRollup.Count
+$tableCustom      = _CountWhere $tablesRollup 'IsCustomEntity' 'True'
+$tableSystem      = _CountWhere $tablesRollup 'IsCustomEntity' 'False'
+$tablePctCustom   = if ($tableTotal -gt 0) { [math]::Round(($tableCustom / $tableTotal) * 100, 1) } else { 0 }
+$totalRecords     = _SumLong    $tablesRollup 'RecordCount'
+$tablesWithData   = _CountWhere $tablesRollup 'HasData' 'True'
+$tablesEmpty      = _CountWhere $tablesRollup 'HasData' 'False'
+$tablesActive     = _CountWhere $tablesRollup 'IsActive' 'True'
+$tablesStale      = _CountWhere $tablesRollup 'IsActive' 'False'   # not active = stale or unknown
+$tablesStrictStale= _CountWhere $tablesRollup 'IsStale'  'True'
+$tablesInApp      = _CountWhere $tablesRollup 'InAnyAppSitemap' 'True'
+
+# UsageBucket distribution (preserve a meaningful order)
+$bucketOrder = @('Active (<=90d)','Dormant (91-365d)','Stale (>365d)','Empty','Unknown','Unsupported')
+$bucketRows  = @{}
+foreach ($t in $tablesRollup) {
+    $b = if ([string]::IsNullOrWhiteSpace([string]$t.UsageBucket)) { '(blank)' } else { [string]$t.UsageBucket }
+    if (-not $bucketRows.ContainsKey($b)) { $bucketRows[$b] = 0 }
+    $bucketRows[$b]++
+}
+# Make sure every well-known bucket appears even when its count is 0
+foreach ($b in $bucketOrder) { if (-not $bucketRows.ContainsKey($b)) { $bucketRows[$b] = 0 } }
+
+# Master / attribute roll-up
+$attrTotal     = $master.Count
+$attrCustom    = _CountWhere $master 'IsCustomAttribute' 'True'
+$attrPctCustom = if ($attrTotal -gt 0) { [math]::Round(($attrCustom / $attrTotal) * 100, 1) } else { 0 }
+$attrZeroFill  = @($master | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.FillRatePercent) -and [double]$_.FillRatePercent -eq 0 }).Count
+$attrFullFill  = @($master | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.FillRatePercent) -and [double]$_.FillRatePercent -eq 100 }).Count
+$cleanupCount  = @($cleanup).Count
+$dead3Plus     = @($master | Where-Object { [int]$_.DeadFieldScore -ge 3 -and $_.IsCustomAttribute -eq 'True' }).Count
+
+$summary = New-Object System.Collections.Generic.List[object]
+function _AddSummary { param([string]$Section, [string]$Metric, $Value, [string]$Notes='')
+    $summary.Add([PSCustomObject][ordered]@{
+        Section = $Section
+        Metric  = $Metric
+        Value   = $Value
+        Notes   = $Notes
+    }) | Out-Null
+}
+
+_AddSummary 'Overview' 'Generated'                  (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')         'Local time of this workbook build'
+_AddSummary 'Overview' 'Source folder'              (Split-Path -Leaf $InputFolder)                  ''
+
+_AddSummary 'Tables'   'Total tables'                $tableTotal                                     ''
+_AddSummary 'Tables'   'Custom tables'               $tableCustom                                    "$tablePctCustom% of total"
+_AddSummary 'Tables'   'System tables'               $tableSystem                                    ''
+_AddSummary 'Tables'   'Tables with data (HasData)'  $tablesWithData                                 ''
+_AddSummary 'Tables'   'Empty tables'                $tablesEmpty                                    'RecordCount = 0'
+_AddSummary 'Tables'   'Active (<=90d)'              $tablesActive                                   'IsActive = True'
+_AddSummary 'Tables'   'Stale (>180d)'               $tablesStrictStale                              'IsStale = True'
+_AddSummary 'Tables'   'Surfaced in any app sitemap' $tablesInApp                                    'InAnyAppSitemap = True'
+_AddSummary 'Tables'   'Total records (sum)'         $totalRecords                                   'Sum of RecordCount across all Success rows'
+
+_AddSummary 'UsageBucket' 'Active (<=90d)'           $bucketRows['Active (<=90d)']                   ''
+_AddSummary 'UsageBucket' 'Dormant (91-365d)'        $bucketRows['Dormant (91-365d)']                ''
+_AddSummary 'UsageBucket' 'Stale (>365d)'            $bucketRows['Stale (>365d)']                    ''
+_AddSummary 'UsageBucket' 'Empty'                    $bucketRows['Empty']                            ''
+_AddSummary 'UsageBucket' 'Unknown'                  $bucketRows['Unknown']                          ''
+_AddSummary 'UsageBucket' 'Unsupported'              $bucketRows['Unsupported']                      'Virtual/Elastic - skipped by RetrieveTotalRecordCount'
+foreach ($b in ($bucketRows.Keys | Where-Object { $_ -notin $bucketOrder } | Sort-Object)) {
+    _AddSummary 'UsageBucket' $b $bucketRows[$b] ''
+}
+
+_AddSummary 'Attributes' 'Total attributes scanned'  $attrTotal                                      ''
+_AddSummary 'Attributes' 'Custom attributes'         $attrCustom                                     "$attrPctCustom% of total"
+_AddSummary 'Attributes' 'Always populated (100%)'   $attrFullFill                                   ''
+_AddSummary 'Attributes' 'Never populated (0%)'      $attrZeroFill                                   'Strong dead-field signal'
+
+_AddSummary 'Cleanup'    'Cleanup candidates'        $cleanupCount                                   'DeadFieldScore >= 2 AND IsCustomAttribute'
+_AddSummary 'Cleanup'    'High-confidence dead'      $dead3Plus                                      'DeadFieldScore >= 3 AND IsCustomAttribute'
+Write-Host "  Summary metrics: $($summary.Count)" -ForegroundColor Gray
+
 # ---- WRITE OUTPUTS ----
 $masterPath     = Join-Path $OutputFolder 'master.csv'
 $tablesPath     = Join-Path $OutputFolder 'tables.csv'
 $cleanupPath    = Join-Path $OutputFolder 'cleanup.csv'
+$summaryPath    = Join-Path $OutputFolder 'summary.csv'
 $dictionaryPath = Join-Path $OutputFolder 'dictionary.csv'
 $readmePath     = Join-Path $OutputFolder 'README.md'
 
@@ -300,6 +417,7 @@ Write-Host "Writing computed CSVs..." -ForegroundColor Cyan
 $master       | Export-Csv -Path $masterPath  -NoTypeInformation
 $tablesRollup | Export-Csv -Path $tablesPath  -NoTypeInformation
 @($cleanup)   | Export-Csv -Path $cleanupPath -NoTypeInformation
+$summary      | Export-Csv -Path $summaryPath -NoTypeInformation
 
 # ---- COLUMN DICTIONARY (one row per column in master.csv / tables.csv) ----
 # Pure human-readable definitions of every output column so anyone opening the
@@ -313,9 +431,9 @@ $dictionary = @(
     [PSCustomObject]@{ Sheet='Master'; Column='AttributeType';           Source='attributeusage'; Description='Dataverse type code: String, Memo, Picklist, Lookup, DateTime, Boolean, Money, Integer, Decimal, Customer, Owner, etc.' }
     [PSCustomObject]@{ Sheet='Master'; Column='IsCustomAttribute';       Source='attributeusage'; Description='True/False. True for custom (publisher-prefixed) columns; False for system columns shipped by Microsoft.' }
     [PSCustomObject]@{ Sheet='Master'; Column='LookupTargets';           Source='attributeusage'; Description='For Lookup-type columns: semicolon-separated list of target table logical names (e.g. "systemuser;team"). Empty for non-lookups.' }
-    [PSCustomObject]@{ Sheet='Master'; Column='TotalRecords';            Source='attributeusage'; Description='Total number of records in the table at the time of the scan (the denominator for FillRatePercent).' }
-    [PSCustomObject]@{ Sheet='Master'; Column='PopulatedCount';          Source='attributeusage'; Description='Number of records where this column has a non-null value.' }
-    [PSCustomObject]@{ Sheet='Master'; Column='FillRatePercent';         Source='attributeusage'; Description='PopulatedCount / TotalRecords * 100. 0 = field is never populated; 100 = always populated. "N/A" when the count call failed.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='TotalRecords';            Source='attributeusage'; Description='Total number of records in the table at the time of the scan (the denominator for FillRatePercent). Blank when the row''s Status != Success.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='PopulatedCount';          Source='attributeusage'; Description='Number of records where this column has a non-null value. Blank when the row''s Status != Success.' }
+    [PSCustomObject]@{ Sheet='Master'; Column='FillRatePercent';         Source='attributeusage'; Description='PopulatedCount / TotalRecords * 100. 0 = field is never populated; 100 = always populated. Blank when the row''s Status != Success.' }
     [PSCustomObject]@{ Sheet='Master'; Column='LastAuditedOn';           Source='audithistory';   Description='Most recent createdon timestamp of any audit row that touched this column. Empty if no audit data in the window.' }
     [PSCustomObject]@{ Sheet='Master'; Column='DaysSinceLastAudited';    Source='audithistory';   Description='Whole days from "now" (UTC) back to LastAuditedOn. Empty if no audit data.' }
     [PSCustomObject]@{ Sheet='Master'; Column='AuditEntriesInWindow';    Source='audithistory';   Description='Total Create+Update audit events touching this column within the configured -DaysBack window.' }
@@ -348,11 +466,14 @@ $dictionary = @(
     [PSCustomObject]@{ Sheet='Tables'; Column='TableSchemaName';           Source='recordcounts';   Description='PascalCase schema name (e.g. msf_ServiceRequest). Used in code-gen and solution exports.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='TableType';                 Source='recordcounts';   Description='Standard / Virtual / Elastic. Virtual + Elastic tables are pre-skipped from RetrieveTotalRecordCount because the API does not support them.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='IsCustomEntity';            Source='recordcounts';   Description='True/False. True for custom (publisher-prefixed) tables; False for system tables shipped by Microsoft.' }
-    [PSCustomObject]@{ Sheet='Tables'; Column='OwnershipType';             Source='tableusage';     Description='UserOwned / TeamOwned / OrganizationOwned / BusinessOwned / etc. Determines whether ownerid lookup applies.' }
-    [PSCustomObject]@{ Sheet='Tables'; Column='RecordCount';               Source='recordcounts';   Description='Approximate row count from RetrieveTotalRecordCount (system-index based; may be slightly stale on test envs).' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='OwnershipType';             Source='tableusage';     Description='UserOwned / TeamOwned / OrganizationOwned / BusinessOwned / etc. Determines whether ownerid lookup applies. Blank for system / no-owner tables (Dataverse OwnershipType=None).' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='RecordCount';               Source='recordcounts';   Description='Approximate row count from RetrieveTotalRecordCount (system-index based; may be slightly stale on test envs). Blank when Status != Success (Skipped / Error / Stats Not Available); see the source RecordCounts sheet Status column for the reason.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='HasData';                   Source='computed';       Description='True/False derived from RecordCount > 0. Blank when RecordCount is unavailable. Use as a quick filter for "tables with at least one row" without re-typing comparisons in every PivotTable.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='UsageBucket';               Source='recordcounts';   Description='Bucket label: Empty / Active (<=90d) / Dormant (91-365d) / Stale (>365d) / Unsupported / Unknown - based on the most recent activity timestamp.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='LastModifiedOn';            Source='recordcounts';   Description='Most recent modifiedon timestamp from the activity probe. Empty if no records or probe was skipped.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='DaysSinceLastModified';     Source='recordcounts';   Description='Whole days since LastModifiedOn (UTC).' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='IsActive';                  Source='computed';       Description='True/False derived from DaysSinceLastModified <= 90. Identifies tables with recent write activity. Blank when DaysSinceLastModified is unavailable.' }
+    [PSCustomObject]@{ Sheet='Tables'; Column='IsStale';                   Source='computed';       Description='True/False derived from DaysSinceLastModified > 180. Identifies tables that have not been written to in over six months. Blank when DaysSinceLastModified is unavailable. Note: a table can be both "not IsActive" and "not IsStale" when activity falls between 91 and 180 days.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='NewestCreatedOn';           Source='tableusage';     Description='Most recent createdon - tells you whether new records are still being created.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='RecordsCreatedLast30Days';  Source='tableusage';     Description='Count of records with createdon in the last 30 days.' }
     [PSCustomObject]@{ Sheet='Tables'; Column='RecordsCreatedLast90Days';  Source='tableusage';     Description='Count of records with createdon in the last 90 days.' }
@@ -379,6 +500,12 @@ $dictionary = @(
     [PSCustomObject]@{ Sheet='SitemapPresence'; Column='SubAreaType';       Source='sitemappresence'; Description='Entity / Dashboard / Url / WebResource / Unknown - what kind of tab the SubArea represents. Only Entity rows have a TableLogicalName.' }
     [PSCustomObject]@{ Sheet='SitemapPresence'; Column='TableLogicalName';  Source='sitemappresence'; Description='Logical name of the table bound to this SubArea (Entity attribute on the SubArea node). Empty for non-Entity tabs. Lowercase. Joins to other sheets.' }
     [PSCustomObject]@{ Sheet='SitemapPresence'; Column='Url';               Source='sitemappresence'; Description='URL the SubArea opens (only set for non-Entity tabs - dashboards, custom URLs, web resources).' }
+
+    # ---- Summary sheet columns ----
+    [PSCustomObject]@{ Sheet='Summary'; Column='Section'; Source='computed'; Description='Grouping label for the metric (Overview / Tables / UsageBucket / Attributes / Cleanup). Use to filter or PivotTable.' }
+    [PSCustomObject]@{ Sheet='Summary'; Column='Metric';  Source='computed'; Description='Human-readable name of the metric (e.g. "Empty tables", "Active (<=90d)").' }
+    [PSCustomObject]@{ Sheet='Summary'; Column='Value';   Source='computed'; Description='The value for the metric. Numeric for counts / sums; date string for "Generated"; folder name for "Source folder".' }
+    [PSCustomObject]@{ Sheet='Summary'; Column='Notes';   Source='computed'; Description='Optional context (e.g. percent of total, the underlying filter expression, or what the metric excludes).' }
 )
 $dictionary | Export-Csv -Path $dictionaryPath -NoTypeInformation
 
@@ -394,6 +521,7 @@ Generated by ``Build-UsageReportWorkbook.ps1`` on top of CSVs produced by
 ### Generated join files (this script)
 | File | What it is |
 |---|---|
+| ``summary.csv``    | Single-screen overview: counts per UsageBucket, empty/active/stale tables, total records, % custom entities, cleanup-candidate counts. Three columns: Section / Metric / Value (+ Notes). |
 | ``master.csv``     | Full per-attribute join. Spine = attributeusage, with audit / UI / top-user / solution data left-joined on (TableLogicalName, AttributeLogicalName). One row per attribute. |
 | ``tables.csv``     | Per-table roll-up joining recordcounts + tableusage on TableLogicalName. One row per table. |
 | ``dictionary.csv`` | Column glossary for master.csv and tables.csv. One row per output column with Sheet / Column / Source / Description. |
@@ -441,11 +569,12 @@ If you have **Copilot in Excel**, open it on the Master sheet and ask things lik
 ## Refresh
 
 Re-run ``Invoke-DataverseUsageReport.ps1`` to produce a new timestamped folder of CSVs,
-then re-run this script against it. master/tables/cleanup are rebuilt from scratch.
+then re-run this script against it. summary/master/tables/cleanup are rebuilt from scratch.
 "@
 Set-Content -Path $readmePath -Value $readme -Encoding UTF8
 
 Write-Host "Generated:" -ForegroundColor Green
+Write-Host "  $summaryPath    ($($summary.Count) metrics)"
 Write-Host "  $masterPath     ($($master.Count) rows)"
 Write-Host "  $tablesPath     ($($tablesRollup.Count) rows)"
 Write-Host "  $cleanupPath    ($(@($cleanup).Count) rows)"
@@ -478,6 +607,7 @@ if ($CombineToXlsx) {
             # against a hashtable; ArrayList.Add returns an int (still fine) and avoids
             # generic-type-literal parsing quirks in PS 7.
             $sheetSpecs = New-Object System.Collections.ArrayList
+            [void]$sheetSpecs.Add(@{ Name='Summary';    File=$summaryPath;    IsMarkdown=$false })
             [void]$sheetSpecs.Add(@{ Name='README';     File=$readmePath;     IsMarkdown=$true })
             [void]$sheetSpecs.Add(@{ Name='Master';     File=$masterPath;     IsMarkdown=$false })
             [void]$sheetSpecs.Add(@{ Name='Tables';     File=$tablesPath;     IsMarkdown=$false })
@@ -557,6 +687,26 @@ if ($CombineToXlsx) {
                     }
                     $lastColLetter = _ColLetter $colCount
 
+                    # Classify each column by header-name pattern so we can (a) write the
+                    # cell value as the right native Excel type (number / date), and
+                    # (b) apply a friendly NumberFormat to the whole column afterwards.
+                    # Storing strings would force every analyst to re-type the column in
+                    # Excel before SUM/AVG/sort would behave correctly.
+                    #
+                    # Pattern rules (header name):
+                    #   Percent$                                  -> percent  (e.g. FillRatePercent)
+                    #   (On|Date)$                                -> date     (e.g. LastModifiedOn, NewestCreatedOn)
+                    #   Count|Records|Rank|Score|Days|Distinct[A-Z]|Entries  -> int
+                    #   anything else                             -> text
+                    $colTypes = New-Object 'string[]' $colCount
+                    for ($c = 0; $c -lt $colCount; $c++) {
+                        $h = $headers[$c]
+                        $colTypes[$c] = if     ($h -match 'Percent$')                                          { 'percent' }
+                                        elseif ($h -match '(On|Date)$')                                        { 'date' }
+                                        elseif ($h -match '(Count|Records|Rank|Score|Days|Distinct[A-Z]|Entries)') { 'int' }
+                                        else                                                                   { 'text' }
+                    }
+
                     # Per-cell write via Cells.Item(row, col).Value2 = [string].
                     # We tried two faster paths first - both fail under PS 7 + Excel COM:
                     #   1) Object[,] -> Range.Value2  : "Unable to cast Object[,] to String"
@@ -582,7 +732,49 @@ if ($CombineToXlsx) {
                         $excelRow = $r + 2
                         for ($c = 0; $c -lt $colCount; $c++) {
                             $val = $row.($headers[$c])
-                            $sheet.Cells.Item($excelRow, $c + 1).Value2 = if ($null -eq $val) { '' } else { [string]$val }
+                            $cell = $sheet.Cells.Item($excelRow, $c + 1)
+                            if ($null -eq $val -or [string]::IsNullOrWhiteSpace([string]$val)) {
+                                # Leave blank cells truly blank so AVERAGE/COUNT ignore them.
+                                $cell.Value2 = ''
+                                continue
+                            }
+                            switch ($colTypes[$c]) {
+                                'int' {
+                                    $n = 0L
+                                    if ([long]::TryParse([string]$val, [ref]$n)) { $cell.Value2 = $n }
+                                    else { $cell.Value2 = [string]$val }
+                                }
+                                'percent' {
+                                    # Stored as the 0-100 raw number; the column NumberFormat
+                                    # below adds a literal "%" suffix without dividing.
+                                    $d = 0.0
+                                    if ([double]::TryParse([string]$val, [ref]$d)) { $cell.Value2 = $d }
+                                    else { $cell.Value2 = [string]$val }
+                                }
+                                'date' {
+                                    $dt = [datetime]::MinValue
+                                    if ([datetime]::TryParse([string]$val, [ref]$dt)) {
+                                        # Excel stores dates as OADate doubles; Value2 expects
+                                        # the numeric representation, NumberFormat handles display.
+                                        $cell.Value2 = $dt.ToOADate()
+                                    }
+                                    else { $cell.Value2 = [string]$val }
+                                }
+                                default {
+                                    # Mixed-type columns (e.g. Summary's Value column carries
+                                    # counts on most rows + a date string + a folder name). Auto-promote
+                                    # cells that parse cleanly as a long so SUM/AVERAGE work and the
+                                    # cell can wear a thousands-separator format. Leaves text alone.
+                                    $sval = [string]$val
+                                    $n = 0L
+                                    if ($sval -match '^-?\d{1,18}$' -and [long]::TryParse($sval, [ref]$n)) {
+                                        $cell.Value2 = $n
+                                        $cell.NumberFormat = '#,##0'
+                                    } else {
+                                        $cell.Value2 = $sval
+                                    }
+                                }
+                            }
                         }
                         if ((($r + 1) % $progressEvery) -eq 0) {
                             $pct = [int]((($r + 1) / $rows.Count) * 100)
@@ -594,6 +786,22 @@ if ($CombineToXlsx) {
                     $rowSw.Stop()
 
                     $excel.Calculation = -4105   # xlCalculationAutomatic
+
+                    # Apply column-level NumberFormat. Skip the header row (start at row 2).
+                    # Without this, every column reads as "General" - 135023 instead of
+                    # 135,023 and ISO timestamps instead of friendly dates.
+                    for ($c = 0; $c -lt $colCount; $c++) {
+                        $fmt = switch ($colTypes[$c]) {
+                            'int'     { '#,##0' }
+                            'percent' { '0.0"%"' }    # literal %; underlying number stays 0-100
+                            'date'    { 'mm/dd/yyyy hh:mm' }
+                            default   { $null }
+                        }
+                        if ($fmt) {
+                            $colLetter = _ColLetter ($c + 1)
+                            $sheet.Range("${colLetter}2:${colLetter}${rowCount}").NumberFormat = $fmt
+                        }
+                    }
 
                     # Re-grab the full range as a single object for ListObjects.Add below
                     $range = $sheet.Range("A1:${lastColLetter}${rowCount}")
@@ -653,15 +861,17 @@ elseif ($OpenAfterBuild) {
 }
 
 return [PSCustomObject]@{
-    OutputFolder    = $OutputFolder
-    MasterCsv       = $masterPath
-    TablesCsv       = $tablesPath
-    CleanupCsv      = $cleanupPath
-    DictionaryCsv   = $dictionaryPath
-    ReadmePath      = $readmePath
-    XlsxPath        = $xlsxPath
-    MasterRowCount  = $master.Count
-    TablesRowCount  = $tablesRollup.Count
-    CleanupRowCount = @($cleanup).Count
+    OutputFolder       = $OutputFolder
+    SummaryCsv         = $summaryPath
+    MasterCsv          = $masterPath
+    TablesCsv          = $tablesPath
+    CleanupCsv         = $cleanupPath
+    DictionaryCsv      = $dictionaryPath
+    ReadmePath         = $readmePath
+    XlsxPath           = $xlsxPath
+    SummaryRowCount    = $summary.Count
+    MasterRowCount     = $master.Count
+    TablesRowCount     = $tablesRollup.Count
+    CleanupRowCount    = @($cleanup).Count
     DictionaryRowCount = $dictionary.Count
 }

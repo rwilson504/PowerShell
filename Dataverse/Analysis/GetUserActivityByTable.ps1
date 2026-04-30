@@ -632,6 +632,9 @@ try {
             $rows = $perAttrRows[$attr.LogicalName]
 
             if ($status -ne 'Success') {
+                # Sentinel policy: RecordCount stays blank (not 'N/A') for non-success
+                # rows. The Status column captures the reason. Blank lets Excel SUM /
+                # AVERAGE / sort treat the column purely as a numeric measure.
                 $allResults.Add([PSCustomObject][ordered]@{
                     TableLogicalName     = $logicalName
                     TableDisplayName     = $meta.DisplayName
@@ -648,7 +651,7 @@ try {
                     UserDomainName       = ''
                     IsDisabled           = ''
                     IsServiceAccount     = ''
-                    RecordCount          = 'N/A'
+                    RecordCount          = ''
                     Rank                 = ''
                     Status               = $status
                 }) | Out-Null

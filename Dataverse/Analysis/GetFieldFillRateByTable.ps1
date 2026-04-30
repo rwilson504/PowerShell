@@ -429,6 +429,13 @@ try {
             Write-Warning "Could not determine total record count for '$logicalName'; skipping."
             continue
         }
+        # Negative counts are a "stats not available" sentinel from the count endpoint
+        # for some table types (Activity-derived, large OOB tables). Skip rather than
+        # emitting -1 into a numeric column where it would poison Excel aggregates.
+        if ($totalCount -lt 0) {
+            Write-Warning "Total record count for '$logicalName' returned $totalCount (stats not available); skipping."
+            continue
+        }
         $totalLabel = if ($Filter) { "matching filter" } else { "total" }
         Write-Host "  Records ${totalLabel}: $totalCount" -ForegroundColor Gray
 
@@ -601,6 +608,10 @@ try {
                     $emptyCount = if ($errored) { $null } else { $totalCount - $populated }
                     $fillRate   = if ($errored) { $null } else { [math]::Round(($populated / $totalCount) * 100, 2) }
 
+                    # Sentinel policy: numeric metric columns hold either a real number
+                    # or are blank. The Status column captures the reason. "N/A" / -1
+                    # strings poison Excel SUM/AVERAGE/sort operations and Power Query
+                    # type inference, so they are intentionally NOT emitted here.
                     $allResults.Add([PSCustomObject][ordered]@{
                         TableLogicalName     = $logicalName
                         TableDisplayName     = $meta.DisplayName
@@ -612,9 +623,9 @@ try {
                         IsCustomAttribute    = $attr.IsCustomAttribute
                         LookupTargets        = $attr.LookupTargets
                         TotalRecords         = $totalCount
-                        PopulatedCount       = if ($errored) { "N/A" } else { $populated }
-                        EmptyCount           = if ($null -eq $emptyCount) { "N/A" } else { $emptyCount }
-                        FillRatePercent      = if ($null -eq $fillRate)   { "N/A" } else { $fillRate }
+                        PopulatedCount       = if ($errored) { '' } else { $populated }
+                        EmptyCount           = if ($null -eq $emptyCount) { '' } else { $emptyCount }
+                        FillRatePercent      = if ($null -eq $fillRate)   { '' } else { $fillRate }
                         Status               = if ($errored) { "Error" } else { "Success" }
                     })
                     $processed++
@@ -625,10 +636,10 @@ try {
         }
     }
 
-    # Sort: by table, then by fill rate descending (errors last)
+    # Sort: by table, then by fill rate descending (errors / blanks last)
     $sorted = $allResults | Sort-Object `
         TableLogicalName,
-        @{ Expression = { if ($_.FillRatePercent -eq "N/A") { -1 } else { [double]$_.FillRatePercent } }; Descending = $true },
+        @{ Expression = { if ([string]::IsNullOrWhiteSpace([string]$_.FillRatePercent)) { -1 } else { [double]$_.FillRatePercent } }; Descending = $true },
         AttributeLogicalName
 
     # Summary
