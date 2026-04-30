@@ -740,8 +740,13 @@ if ($CombineToXlsx) {
                             }
                             switch ($colTypes[$c]) {
                                 'int' {
+                                    # Excel COM Range.Value2 setter accepts VT_I4 / VT_R8 / String
+                                    # but NOT VT_I8 - the IDispatch resolver mis-picks the String
+                                    # setter and throws "Unable to cast Int64 to String". Cast to
+                                    # [double] to land on VT_R8 (safe up to 2^53). Display formatting
+                                    # is applied per-column further down (#,##0).
                                     $n = 0L
-                                    if ([long]::TryParse([string]$val, [ref]$n)) { $cell.Value2 = $n }
+                                    if ([long]::TryParse([string]$val, [ref]$n)) { $cell.Value2 = [double]$n }
                                     else { $cell.Value2 = [string]$val }
                                 }
                                 'percent' {
@@ -765,10 +770,12 @@ if ($CombineToXlsx) {
                                     # counts on most rows + a date string + a folder name). Auto-promote
                                     # cells that parse cleanly as a long so SUM/AVERAGE work and the
                                     # cell can wear a thousands-separator format. Leaves text alone.
+                                    # Cast to [double] (not [long]) - see the 'int' branch comment
+                                    # for why VT_I8 fails through the IDispatch String setter.
                                     $sval = [string]$val
                                     $n = 0L
                                     if ($sval -match '^-?\d{1,18}$' -and [long]::TryParse($sval, [ref]$n)) {
-                                        $cell.Value2 = $n
+                                        $cell.Value2 = [double]$n
                                         $cell.NumberFormat = '#,##0'
                                     } else {
                                         $cell.Value2 = $sval
