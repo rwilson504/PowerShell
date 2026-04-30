@@ -715,11 +715,30 @@ if ($CombineToXlsx) {
                     # matter how the SAFEARRAY is shaped. Per-cell assignment is the only
                     # reliable path under PS 7. ScreenUpdating/Calculation are already off
                     # so wall-clock cost is acceptable for typical report sizes.
+                    #
+                    # Even per-cell assignment via $cell.Value2 = $val hits a related
+                    # PSAdapter caching bug: PowerShell caches the Value2 setter
+                    # signature on first use (typically String, from header writes),
+                    # then fails with "Unable to cast Double/Int64 to String" on every
+                    # subsequent numeric assignment. The reliable workaround is to
+                    # bypass the PSAdapter cache by going through Type.InvokeMember
+                    # directly, which uses fresh IDispatch resolution per call.
                     $excel.Calculation = -4135   # xlCalculationManual
+
+                    $setProp = [System.Reflection.BindingFlags]::SetProperty
+                    $comType = [System.__ComObject]
+                    function _SetCellValue {
+                        param($Cell, $Value)
+                        # IMPORTANT: pass the value as a single-element [object[]] - this
+                        # forces InvokeMember to do fresh IDispatch dispatch and the
+                        # COM marshaller picks the correct VARIANT subtype based on the
+                        # boxed value's runtime type.
+                        [void]$comType.InvokeMember('Value2', $setProp, $null, $Cell, ([object[]]@($Value)))
+                    }
 
                     # Header row
                     for ($c = 0; $c -lt $colCount; $c++) {
-                        $sheet.Cells.Item(1, $c + 1).Value2 = [string]$headers[$c]
+                        _SetCellValue $sheet.Cells.Item(1, $c + 1) ([string]$headers[$c])
                     }
 
                     # Data rows. Print a progress line periodically so the user can see
@@ -735,7 +754,7 @@ if ($CombineToXlsx) {
                             $cell = $sheet.Cells.Item($excelRow, $c + 1)
                             if ($null -eq $val -or [string]::IsNullOrWhiteSpace([string]$val)) {
                                 # Leave blank cells truly blank so AVERAGE/COUNT ignore them.
-                                $cell.Value2 = ''
+                                _SetCellValue $cell ''
                                 continue
                             }
                             switch ($colTypes[$c]) {
@@ -746,24 +765,24 @@ if ($CombineToXlsx) {
                                     # [double] to land on VT_R8 (safe up to 2^53). Display formatting
                                     # is applied per-column further down (#,##0).
                                     $n = 0L
-                                    if ([long]::TryParse([string]$val, [ref]$n)) { $cell.Value2 = [double]$n }
-                                    else { $cell.Value2 = [string]$val }
+                                    if ([long]::TryParse([string]$val, [ref]$n)) { _SetCellValue $cell ([double]$n) }
+                                    else { _SetCellValue $cell ([string]$val) }
                                 }
                                 'percent' {
                                     # Stored as the 0-100 raw number; the column NumberFormat
                                     # below adds a literal "%" suffix without dividing.
                                     $d = 0.0
-                                    if ([double]::TryParse([string]$val, [ref]$d)) { $cell.Value2 = $d }
-                                    else { $cell.Value2 = [string]$val }
+                                    if ([double]::TryParse([string]$val, [ref]$d)) { _SetCellValue $cell $d }
+                                    else { _SetCellValue $cell ([string]$val) }
                                 }
                                 'date' {
                                     $dt = [datetime]::MinValue
                                     if ([datetime]::TryParse([string]$val, [ref]$dt)) {
                                         # Excel stores dates as OADate doubles; Value2 expects
                                         # the numeric representation, NumberFormat handles display.
-                                        $cell.Value2 = $dt.ToOADate()
+                                        _SetCellValue $cell ($dt.ToOADate())
                                     }
-                                    else { $cell.Value2 = [string]$val }
+                                    else { _SetCellValue $cell ([string]$val) }
                                 }
                                 default {
                                     # Mixed-type columns (e.g. Summary's Value column carries
@@ -775,10 +794,10 @@ if ($CombineToXlsx) {
                                     $sval = [string]$val
                                     $n = 0L
                                     if ($sval -match '^-?\d{1,18}$' -and [long]::TryParse($sval, [ref]$n)) {
-                                        $cell.Value2 = [double]$n
+                                        _SetCellValue $cell ([double]$n)
                                         $cell.NumberFormat = '#,##0'
                                     } else {
-                                        $cell.Value2 = $sval
+                                        _SetCellValue $cell $sval
                                     }
                                 }
                             }
