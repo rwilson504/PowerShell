@@ -44,6 +44,11 @@
 .PARAMETER OutputPath
     Optional file path for the export.
 
+.PARAMETER ExcludeUserIdentifiers
+    Suppress UserDisplayName and UserDomainName in the output (UserId GUID is kept). Use
+    when moving the CSV from production into a non-prod environment for analysis without
+    carrying user names / UPN / email.
+
 .EXAMPLE
     .\GetUserActivityByTableWithAuth.ps1 -TenantId "..." -ClientId "..." -OrganizationUrl "https://your-org.crm.dynamics.com" -Tables "msf_program" -AutoDetectUserLookups -OutputFormat CSV
 
@@ -103,7 +108,10 @@ param (
     [string]$OutputFormat = "Table",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ExcludeUserIdentifiers
 )
 
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
@@ -138,6 +146,7 @@ if ($ExcludeStandardUserAttributes)                               { $scriptParam
 if ($Filter)                                                      { $scriptParams.Filter                      = $Filter }
 if ($TopUsersPerAttribute -gt 0)                                  { $scriptParams.TopUsersPerAttribute        = $TopUsersPerAttribute }
 if ($OutputPath)                                                  { $scriptParams.OutputPath                  = $OutputPath }
+if ($ExcludeUserIdentifiers)                                      { $scriptParams.ExcludeUserIdentifiers      = $true }
 
 $mainScript = Join-Path $scriptDir "GetUserActivityByTable.ps1"
 $results = & $mainScript @scriptParams

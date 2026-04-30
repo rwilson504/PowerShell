@@ -94,6 +94,14 @@
 .PARAMETER OutputPath
     Optional file path to export the results.
 
+.PARAMETER ExcludeUserIdentifiers
+    When set, the per-user directory lookup is skipped entirely and the PII columns
+    (UserDisplayName, UserDomainName) are emitted blank. The UserId GUID, RecordCount,
+    Rank, IsDisabled, and IsServiceAccount columns are still populated. Useful when
+    moving the CSV from production to a non-prod environment for analysis without
+    carrying user names / UPN / email addresses with it. Default is off (full PII
+    is included to support process-owner analysis).
+
 .EXAMPLE
     .\GetUserActivityByTable.ps1 -OrganizationUrl "https://your-org.crm.dynamics.com" -AccessToken $token -Tables "msf_program"
 
@@ -174,7 +182,10 @@ param (
     [string]$OutputFormat = "Table",
 
     [Parameter(Mandatory = $false)]
-    [string]$OutputPath
+    [string]$OutputPath,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ExcludeUserIdentifiers
 )
 
 $OrganizationUrl = $OrganizationUrl.TrimEnd('/')
@@ -607,8 +618,13 @@ try {
         Write-Progress -Activity "User activity: $logicalName" -Completed
 
         $totalIdRefs = ($idsByTarget.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
-        Write-Host "  Looking up directory data for $totalIdRefs total user-record reference(s) across $($idsByTarget.Count) target table(s)..." -ForegroundColor Gray
-        $userDir = Get-UserDirectory -OrgUrl $OrganizationUrl -Headers $headers -UserIdsByTarget $idsByTarget -CustomColumns $CustomTargetNameColumns
+        if ($ExcludeUserIdentifiers) {
+            Write-Host "  Skipping directory lookup for $totalIdRefs user-record reference(s) (-ExcludeUserIdentifiers)." -ForegroundColor Gray
+            $userDir = @{}
+        } else {
+            Write-Host "  Looking up directory data for $totalIdRefs total user-record reference(s) across $($idsByTarget.Count) target table(s)..." -ForegroundColor Gray
+            $userDir = Get-UserDirectory -OrgUrl $OrganizationUrl -Headers $headers -UserIdsByTarget $idsByTarget -CustomColumns $CustomTargetNameColumns
+        }
 
         # Emit output rows
         foreach ($attr in $selected) {
@@ -657,8 +673,12 @@ try {
                 }
                 # Prefer the directory-resolved display name when available (handles custom
                 # person tables whose lookup didn't expose a name attribute and so the
-                # FetchXML formatted value falls back to the GUID).
-                $resolvedDisplay = if ($u -and $u.DisplayName) { $u.DisplayName } else { $r.UserName }
+                # FetchXML formatted value falls back to the GUID). When -ExcludeUserIdentifiers
+                # is set we suppress both the resolved display name and the FetchXML-formatted
+                # name so the output never carries user-identifying text.
+                $resolvedDisplay = if ($ExcludeUserIdentifiers) { '' }
+                                   elseif ($u -and $u.DisplayName) { $u.DisplayName }
+                                   else { $r.UserName }
 
                 $allResults.Add([PSCustomObject][ordered]@{
                     TableLogicalName     = $logicalName
@@ -673,7 +693,7 @@ try {
                     UserTargetEntity     = $r.TargetEntity
                     UserId               = $r.UserId
                     UserDisplayName      = $resolvedDisplay
-                    UserDomainName       = if ($u) { $u.DomainName } else { '' }
+                    UserDomainName       = if ($ExcludeUserIdentifiers) { '' } elseif ($u) { $u.DomainName } else { '' }
                     IsDisabled           = if ($u) { $u.IsDisabled } else { '' }
                     IsServiceAccount     = if ($u) { $u.IsServiceAccount } else { '' }
                     RecordCount          = $r.Count

@@ -36,6 +36,9 @@
     Forwarded to GetUserActivityByTable. Auto-discovers every systemuser-targeted lookup.
 .PARAMETER UserLookupAttributes
     Forwarded to GetUserActivityByTable. Custom user lookups beyond the standard 4.
+.PARAMETER ExcludeUserIdentifiers
+    Forwarded to GetUserActivityByTable. Suppress UserDisplayName / UserDomainName in the
+    useractivity_*.csv (UserId GUID is preserved). Useful for prod -> non-prod handoff.
 
 .EXAMPLE
     .\Invoke-DataverseUsageReportWithAuth.ps1 -TenantId "..." -ClientId "..." -OrganizationUrl "https://your-org.crm.dynamics.com" -SolutionUniqueName "msf_Core" -IncludeLastActivity -ActivityFallback -AutoDetectUserLookups
@@ -97,6 +100,9 @@ param (
     [hashtable]$CustomTargetNameColumns,
 
     [Parameter(Mandatory = $false)]
+    [switch]$ExcludeUserIdentifiers,
+
+    [Parameter(Mandatory = $false)]
     [switch]$BuildWorkbook,
 
     [Parameter(Mandatory = $false)]
@@ -130,6 +136,7 @@ if ($AutoDetectUserLookups)                                       { $scriptParam
 if ($UserLookupAttributes -and $UserLookupAttributes.Count -gt 0) { $scriptParams.UserLookupAttributes  = $UserLookupAttributes }
 if ($UserTargetTables -and ($UserTargetTables.Count -gt 1 -or $UserTargetTables[0] -ne 'systemuser')) { $scriptParams.UserTargetTables = $UserTargetTables }
 if ($CustomTargetNameColumns -and $CustomTargetNameColumns.Count -gt 0) { $scriptParams.CustomTargetNameColumns = $CustomTargetNameColumns }
+if ($ExcludeUserIdentifiers)                                      { $scriptParams.ExcludeUserIdentifiers = $true }
 if ($BuildWorkbook)                                               { $scriptParams.BuildWorkbook         = $true }
 if ($CombineToXlsx)                                               { $scriptParams.CombineToXlsx         = $true }
 if ($OpenAfterBuild)                                              { $scriptParams.OpenAfterBuild        = $true }

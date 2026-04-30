@@ -64,6 +64,10 @@
 .PARAMETER UserLookupAttributes
     Forwarded to GetUserActivityByTable. Custom user lookups beyond the 4 standard ones.
 
+.PARAMETER ExcludeUserIdentifiers
+    Forwarded to GetUserActivityByTable. Blanks UserDisplayName / UserDomainName in the
+    useractivity_*.csv output (UserId GUID is kept). Useful for prod -> non-prod handoff.
+
 .EXAMPLE
     .\Invoke-DataverseUsageReport.ps1 -OrganizationUrl "https://your-org.crm.dynamics.com" -AccessToken $token -SolutionUniqueName "msf_Core" -IncludeLastActivity -ActivityFallback -AutoDetectUserLookups
 
@@ -120,6 +124,9 @@ param (
 
     [Parameter(Mandatory = $false)]
     [hashtable]$CustomTargetNameColumns,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ExcludeUserIdentifiers,
 
     [Parameter(Mandatory = $false)]
     [switch]$BuildWorkbook,
@@ -240,6 +247,7 @@ if ($AutoDetectUserLookups)                           { $uaParams.AutoDetectUser
 if ($UserLookupAttributes -and $UserLookupAttributes.Count -gt 0) { $uaParams.UserLookupAttributes = $UserLookupAttributes }
 if ($UserTargetTables -and ($UserTargetTables.Count -gt 1 -or $UserTargetTables[0] -ne 'systemuser')) { $uaParams.UserTargetTables = $UserTargetTables }
 if ($CustomTargetNameColumns -and $CustomTargetNameColumns.Count -gt 0) { $uaParams.CustomTargetNameColumns = $CustomTargetNameColumns }
+if ($ExcludeUserIdentifiers)                          { $uaParams.ExcludeUserIdentifiers = $true }
 $summary.Add((Invoke-Report -Name 'UserActivity'      -Script 'GetUserActivityByTable.ps1'  -OutputFile "useractivity_$timestamp.csv"     -ExtraParams $uaParams))
 
 # ---- 8. Audit history (audit-table scan; can be slow; biggest payload) -------
