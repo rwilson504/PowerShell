@@ -1,10 +1,15 @@
 <#
 .SYNOPSIS
-    Acquires an access token using the device code flow for Azure AD, including support for GCC, GCCH, and DoD environments.
+    Acquires an access token using device-code or interactive browser authentication.
 
 .DESCRIPTION
-    This script uses the device code flow to authenticate a user and acquire an access token from Azure AD.
-    The user will be prompted to visit a URL and enter a code to complete the authentication.
+    This script authenticates a user and acquires an access token from Azure AD. DeviceCode
+    prompts the user to visit a URL and enter a code. Interactive opens the system browser,
+    uses the OAuth authorization-code flow with PKCE, and receives the response on a localhost
+    loopback redirect.
+
+    Interactive requires the app registration to allow public client flows and to have
+    http://localhost registered as a Mobile and desktop applications redirect URI.
 
     Token caching is supported: on first authentication the token response (including refresh token) is
     cached to a local file. On subsequent runs the cached access token is returned if still valid, or
@@ -26,6 +31,10 @@
 .PARAMETER Environment
     The Azure environment. Valid values are "Public", "GCC", "GCCH", "DoD". Default value is "Public".
 
+.PARAMETER AuthenticationMode
+    Authentication flow to use when no valid cached token is available. Valid values are
+    "DeviceCode" and "Interactive". Default is "DeviceCode".
+
 .PARAMETER NoCache
     When specified, skips token caching and always performs device code authentication.
 
@@ -41,6 +50,11 @@
     .\GetAccessTokenDeviceCode.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -ClearCache
 
     Clears any cached token and performs a fresh device code authentication.
+
+.EXAMPLE
+    .\GetAccessTokenDeviceCode.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -Scope "https://your-org.crm.dynamics.com/user_impersonation" -AuthenticationMode Interactive
+
+    Opens the system browser for interactive sign-in using authorization code with PKCE.
 #>
 
 param (
@@ -48,6 +62,7 @@ param (
     [string]$ClientId,
     [string]$Scope = "https://your-org.crm.dynamics.com/.default",
     [ValidateSet("Public", "GCC", "GCCH", "DoD")] [string]$Environment = "Public",
+    [ValidateSet("DeviceCode", "Interactive")] [string]$AuthenticationMode = "DeviceCode",
     [switch]$NoCache,
     [switch]$ClearCache
 )
@@ -203,6 +218,128 @@ function Get-AccessTokenByDeviceCode {
     }
 }
 
+function ConvertTo-Base64Url {
+    param ([byte[]]$Bytes)
+
+    return [Convert]::ToBase64String($Bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function Get-AccessTokenInteractively {
+    param (
+        [string]$TenantId,
+        [string]$ClientId,
+        [string]$Scope,
+        [string]$Environment
+    )
+
+    switch ($Environment) {
+        "Public" { $loginEndpoint = "https://login.microsoftonline.com" }
+        "GCC"    { $loginEndpoint = "https://login.microsoftonline.us" }
+        "GCCH"   { $loginEndpoint = "https://login.microsoftonline.us" }
+        "DoD"    { $loginEndpoint = "https://login.microsoftonline.us" }
+    }
+
+    $tcpListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+    $tcpListener.Start()
+    $port = ([System.Net.IPEndPoint]$tcpListener.LocalEndpoint).Port
+    $tcpListener.Stop()
+
+    $redirectUri = "http://localhost:$port/"
+    $stateBytes = New-Object byte[] 32
+    $verifierBytes = New-Object byte[] 64
+    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $random.GetBytes($stateBytes)
+        $random.GetBytes($verifierBytes)
+    }
+    finally {
+        $random.Dispose()
+    }
+
+    $state = ConvertTo-Base64Url -Bytes $stateBytes
+    $codeVerifier = ConvertTo-Base64Url -Bytes $verifierBytes
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $challengeBytes = $sha256.ComputeHash([System.Text.Encoding]::ASCII.GetBytes($codeVerifier))
+    }
+    finally {
+        $sha256.Dispose()
+    }
+    $codeChallenge = ConvertTo-Base64Url -Bytes $challengeBytes
+    $authorizationScope = "$Scope offline_access openid profile"
+
+    $authorizeEndpoint = "$loginEndpoint/$TenantId/oauth2/v2.0/authorize"
+    $authorizationParameters = @{
+        client_id             = $ClientId
+        response_type         = 'code'
+        redirect_uri          = $redirectUri
+        response_mode         = 'query'
+        scope                 = $authorizationScope
+        state                 = $state
+        code_challenge        = $codeChallenge
+        code_challenge_method = 'S256'
+    }
+    $authorizationQuery = ($authorizationParameters.GetEnumerator() | ForEach-Object {
+        "$([Uri]::EscapeDataString($_.Key))=$([Uri]::EscapeDataString([string]$_.Value))"
+    }) -join '&'
+    $authorizationUri = "$authorizeEndpoint`?$authorizationQuery"
+
+    if (-not $authorizationUri.Contains("client_id=$([Uri]::EscapeDataString($ClientId))") -or
+        ($authorizationUri -split '&').Count -ne $authorizationParameters.Count) {
+        throw "Interactive authorization URL could not be constructed correctly."
+    }
+
+    $listener = [System.Net.HttpListener]::new()
+    $listener.Prefixes.Add($redirectUri)
+    try {
+        $listener.Start()
+        Write-Host "Opening the system browser for interactive sign-in..." -ForegroundColor Cyan
+        Start-Process $authorizationUri
+
+        $contextTask = $listener.GetContextAsync()
+        if (-not $contextTask.Wait([TimeSpan]::FromMinutes(5))) {
+            throw "Interactive sign-in timed out after 5 minutes."
+        }
+        $context = $contextTask.Result
+
+        $responseMessage = "Authentication completed. You can close this browser window."
+        $responseBytes = [System.Text.Encoding]::UTF8.GetBytes($responseMessage)
+        $context.Response.ContentType = 'text/plain; charset=utf-8'
+        $context.Response.ContentLength64 = $responseBytes.Length
+        $context.Response.OutputStream.Write($responseBytes, 0, $responseBytes.Length)
+        $context.Response.OutputStream.Close()
+
+        $query = $context.Request.QueryString
+        if ($query['error']) {
+            throw "Interactive authentication failed: $($query['error']) - $($query['error_description'])"
+        }
+        if ($query['state'] -ne $state) {
+            throw "Interactive authentication returned an invalid state value."
+        }
+        if (-not $query['code']) {
+            throw "Interactive authentication did not return an authorization code."
+        }
+
+        $tokenEndpoint = "$loginEndpoint/$TenantId/oauth2/v2.0/token"
+        $tokenRequestBody = @{
+            client_id     = $ClientId
+            grant_type    = 'authorization_code'
+            code          = $query['code']
+            redirect_uri  = $redirectUri
+            code_verifier = $codeVerifier
+            scope         = $authorizationScope
+        }
+
+        return Invoke-RestMethod -Method Post -Uri $tokenEndpoint -ContentType "application/x-www-form-urlencoded" -Body $tokenRequestBody
+    }
+    finally {
+        if ($listener.IsListening) {
+            $listener.Stop()
+        }
+        $listener.Close()
+    }
+}
+
 function Get-AccessTokenByRefreshToken {
     param (
         [string]$TenantId,
@@ -262,15 +399,20 @@ if (-not $NoCache) {
             Write-Host "Token refreshed successfully." -ForegroundColor Green
         }
         catch {
-            Write-Warning "Silent refresh failed. Falling back to device code flow."
+            Write-Warning "Silent refresh failed. Falling back to $AuthenticationMode authentication."
             $tokenResponse = $null
         }
     }
 }
 
-# Fall back to device code flow
+# Fall back to the requested interactive flow
 if (-not $tokenResponse) {
-    $tokenResponse = Get-AccessTokenByDeviceCode -TenantId $TenantId -ClientId $ClientId -Scope $Scope -Environment $Environment
+    if ($AuthenticationMode -eq 'Interactive') {
+        $tokenResponse = Get-AccessTokenInteractively -TenantId $TenantId -ClientId $ClientId -Scope $Scope -Environment $Environment
+    }
+    else {
+        $tokenResponse = Get-AccessTokenByDeviceCode -TenantId $TenantId -ClientId $ClientId -Scope $Scope -Environment $Environment
+    }
 }
 
 # Cache the token response

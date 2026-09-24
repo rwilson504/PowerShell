@@ -14,6 +14,9 @@
 .PARAMETER Environment
     The Azure environment. Valid values are "Public", "GCC", "GCCH", "DoD". Default value is "Public".
 
+.PARAMETER AuthenticationMode
+    Authentication flow to use. Valid values are "DeviceCode" and "Interactive". Default "DeviceCode".
+
 .PARAMETER OrganizationUrl
     The URL of the Dataverse organization.
 
@@ -30,6 +33,7 @@ param (
     [string]$TenantId,
     [string]$ClientId,
     [ValidateSet("Public", "GCC", "GCCH", "DoD")] [string]$Environment = "Public",
+    [ValidateSet("DeviceCode", "Interactive")] [string]$AuthenticationMode = "DeviceCode",
     [string]$OrganizationUrl,
     [string]$RelationshipName
 )
@@ -37,7 +41,7 @@ param (
 # Get the access token
 $scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $authScript  = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
-$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment -AuthenticationMode $AuthenticationMode
 
 # Delete the relationship
 $mainScript = Join-Path $scriptDir "DeleteRelationship.ps1"

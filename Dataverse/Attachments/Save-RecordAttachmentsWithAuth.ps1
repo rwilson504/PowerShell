@@ -17,6 +17,12 @@
     The Azure environment. Valid values are "Public", "GCC", "GCCH", and "DoD".
     Defaults to "Public".
 
+.PARAMETER AuthenticationMode
+    Authentication flow to use. "DeviceCode" is the default. "Interactive" opens the
+    system browser and uses authorization code with PKCE. Interactive requires the app
+    registration to allow public client flows with http://localhost registered as a
+    Mobile and desktop applications redirect URI.
+
 .PARAMETER OrganizationUrl
     The URL of the Dataverse organization.
 
@@ -39,6 +45,11 @@
     .\Save-RecordAttachmentsWithAuth.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -OrganizationUrl "https://your-org.crm.dynamics.com" -RecordId "00000000-0000-0000-0000-000000000001" -OutputPath "C:\Exports\CaseAttachments" -Overwrite
 
     Downloads the attachments to a specific directory and replaces existing files.
+
+.EXAMPLE
+    .\Save-RecordAttachmentsWithAuth.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -OrganizationUrl "https://your-org.crm.dynamics.com" -RecordId "00000000-0000-0000-0000-000000000001" -AuthenticationMode Interactive
+
+    Opens the system browser for interactive sign-in, then downloads the attachments.
 #>
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -52,6 +63,10 @@ param (
     [Parameter(Mandatory = $false)]
     [ValidateSet("Public", "GCC", "GCCH", "DoD")]
     [string]$Environment = "Public",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("DeviceCode", "Interactive")]
+    [string]$AuthenticationMode = "DeviceCode",
 
     [Parameter(Mandatory = $true)]
     [string]$OrganizationUrl,
@@ -69,7 +84,7 @@ param (
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $authScript = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
-$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$($OrganizationUrl.TrimEnd('/'))/user_impersonation" -Environment $Environment
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$($OrganizationUrl.TrimEnd('/'))/user_impersonation" -Environment $Environment -AuthenticationMode $AuthenticationMode
 
 if (-not $accessToken) {
     Write-Error "Failed to acquire access token."

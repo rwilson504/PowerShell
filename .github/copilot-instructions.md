@@ -21,7 +21,7 @@ This is a public utility repository. Do not create or maintain `SESSION_LOG.md` 
         ScriptNameWithAuth.ps1    # Auth wrapper that acquires a token then calls the base script
         _SharedHelper.ps1         # Internal dot-sourced helper; not a standalone command
 EntraID/
-    GetAccessTokenDeviceCode.ps1  # Shared device-code-flow auth helper
+    GetAccessTokenDeviceCode.ps1  # Shared device-code / interactive browser auth helper
 README.md                          # Top-level index linking to every category README
 ```
 
@@ -92,8 +92,7 @@ Every script **must** start with a `<# ... #>` comment-based help block containi
 | `.DESCRIPTION` | Yes | Detailed explanation of behavior, parameters, and any prerequisites. |
 | `.PARAMETER` | Yes | One entry per parameter — describe purpose, valid values, and defaults. |
 | `.EXAMPLE` | Yes | At least one realistic usage example with explanation text. |
-| `.AUTHOR` | Optional | `Rick Wilson` when included. |
-| `.NOTES` | Optional | Prerequisites, module installs, security notes, version info. |
+| `.NOTES` | Optional | Prerequisites, module installs, security notes, version info, and `Author: Rick Wilson` attribution when included. PowerShell does not support a standalone `.AUTHOR` help keyword. |
 
 ### Parameters
 
@@ -150,6 +149,7 @@ $headers = @{
 | `$TenantId` | `[string]` | Yes | — | Azure AD tenant ID |
 | `$ClientId` | `[string]` | Yes | — | App registration client ID |
 | `$Environment` | `[string]` | No | `"Public"` | Azure cloud: `Public`, `GCC`, `GCCH`, `DoD` |
+| `$AuthenticationMode` | `[string]` | No | `"DeviceCode"` | Authentication flow: `DeviceCode` or browser-based `Interactive` |
 
 - Keep the base script and wrapper parameter surfaces in sync whenever parameters, defaults, validation attributes, or forwarding behavior change.
 
@@ -160,7 +160,8 @@ $accessToken = & ..\EntraID\GetAccessTokenDeviceCode.ps1 `
     -TenantId $TenantId `
     -ClientId $ClientId `
     -Scope "$OrganizationUrl/user_impersonation" `
-    -Environment $Environment
+    -Environment $Environment `
+    -AuthenticationMode $AuthenticationMode
 ```
 
 - Then calls the base script, passing the token and all other parameters:
@@ -205,7 +206,7 @@ Two patterns are used to reference the auth helper from a WithAuth script:
 ```powershell
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $authScript = Join-Path $scriptDir "..\EntraID\GetAccessTokenDeviceCode.ps1"
-$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment -AuthenticationMode $AuthenticationMode
 ```
 
 Prefer the `Split-Path` approach for new scripts as it is more reliable when the working directory differs from the script location.
@@ -214,7 +215,7 @@ Prefer the `Split-Path` approach for new scripts as it is more reliable when the
 
 ## Shared Auth Helper — `EntraID/GetAccessTokenDeviceCode.ps1`
 
-This is the **single shared authentication script** used by all WithAuth wrappers. It implements the **OAuth 2.0 Device Code Flow**.
+This is the **single shared authentication script** used by all WithAuth wrappers. It supports OAuth 2.0 device-code authentication and browser-based authorization code with PKCE. Interactive mode requires a public-client app registration with `http://localhost` configured as a Mobile and desktop applications redirect URI.
 
 ### Parameters
 
@@ -224,15 +225,16 @@ This is the **single shared authentication script** used by all WithAuth wrapper
 | `$ClientId` | `[string]` | — | App registration client/application ID |
 | `$Scope` | `[string]` | `"https://your-org.crm.dynamics.com/.default"` | OAuth scope for the target resource |
 | `$Environment` | `[string]` | `"Public"` | Azure cloud environment (`Public`, `GCC`, `GCCH`, `DoD`) |
+| `$AuthenticationMode` | `[string]` | `"DeviceCode"` | `DeviceCode` or browser-based `Interactive` |
 
 ### How It Works
 
 1. Selects the correct login endpoint based on `$Environment`:
    - **Public**: `https://login.microsoftonline.com`
    - **GCC / GCCH / DoD**: `https://login.microsoftonline.us`
-2. Requests a device code from `/$TenantId/oauth2/v2.0/devicecode`.
-3. Prompts the user to visit the verification URL and enter the code.
-4. Polls `/$TenantId/oauth2/v2.0/token` until the user completes sign-in.
+2. Uses a valid cached token or refresh token when available.
+3. With `DeviceCode`, requests a device code and polls until sign-in completes.
+4. With `Interactive`, opens the system browser and receives an authorization-code response on a localhost loopback listener using PKCE.
 5. Returns **only the access token string** via `Write-Output`.
 
 ### Scope Conventions
@@ -377,6 +379,9 @@ $response
 .PARAMETER Environment
     The Azure environment. Valid values are "Public", "GCC", "GCCH", "DoD". Default value is "Public".
 
+.PARAMETER AuthenticationMode
+    Authentication flow. Valid values are "DeviceCode" and "Interactive". Default is "DeviceCode".
+
 .PARAMETER OrganizationUrl
     The URL of the Dataverse organization.
 
@@ -400,6 +405,10 @@ param (
     [ValidateSet("Public", "GCC", "GCCH", "DoD")]
     [string]$Environment = "Public",
 
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("DeviceCode", "Interactive")]
+    [string]$AuthenticationMode = "DeviceCode",
+
     [Parameter(Mandatory = $true)]
     [string]$OrganizationUrl,
 
@@ -407,11 +416,11 @@ param (
     [string]$YourParam
 )
 
-# Get the access token using device code flow
+# Get the access token
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $authScript = Join-Path $scriptDir "..\EntraID\GetAccessTokenDeviceCode.ps1"
-$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment -AuthenticationMode $AuthenticationMode
 
 if (-not $accessToken) {
     Write-Error "Failed to acquire access token."
