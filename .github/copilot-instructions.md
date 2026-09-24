@@ -4,6 +4,10 @@
 
 This repository is a collection of reusable PowerShell scripts organized by technology area (Dataverse, EntraID, Files, PowerShell, SharePoint, etc.). Scripts follow a consistent structure and, when they call authenticated APIs, are split into two versions: a **base script** and a **WithAuth wrapper**.
 
+Before changing a script, read its folder README, its paired base/wrapper script when one exists, and any underscore-prefixed helper it dot-sources. Preserve compatibility with the PowerShell edition already supported by the nearby code; do not modernize an entire script solely for style consistency.
+
+This is a public utility repository. Do not create or maintain `SESSION_LOG.md` files or `decisions/` records here.
+
 ---
 
 ## Project Structure
@@ -15,6 +19,7 @@ This repository is a collection of reusable PowerShell scripts organized by tech
         README.md                 # Index of every script in this subfolder (REQUIRED)
         ScriptName.ps1            # Base script (accepts AccessToken or handles its own auth)
         ScriptNameWithAuth.ps1    # Auth wrapper that acquires a token then calls the base script
+        _SharedHelper.ps1         # Internal dot-sourced helper; not a standalone command
 EntraID/
     GetAccessTokenDeviceCode.ps1  # Shared device-code-flow auth helper
 README.md                          # Top-level index linking to every category README
@@ -101,12 +106,15 @@ Every script **must** start with a `<# ... #>` comment-based help block containi
 
 ### Code Style
 
-- Use descriptive variable names in PascalCase (e.g., `$AccessToken`, `$OrganizationUrl`).
+- Use descriptive names. Public parameter names use PascalCase (for example, `$AccessToken` and `$OrganizationUrl`); local variables follow the casing and style of the surrounding script.
 - Use `Write-Host` with `-ForegroundColor` for user-facing status messages (Cyan for info, Green for success, Yellow for warnings, Red for errors).
 - Use `Write-Error` for fatal errors and `Write-Warning` for non-fatal issues.
 - Use `Write-Output` or `return` for pipeline-friendly output.
 - Extract reusable logic into local functions within the script when needed.
 - Use hashtable splatting (`@params`) for calls with many parameters.
+- Name shared, non-standalone helper files with a leading underscore and dot-source them relative to `$PSScriptRoot` or the current script directory.
+- Use `[CmdletBinding(SupportsShouldProcess)]` and `$PSCmdlet.ShouldProcess()` for commands that make destructive or broad local changes when practical.
+- Never write access tokens, secrets, full authorization headers, or device codes to output, logs, examples, or committed files.
 
 ---
 
@@ -142,6 +150,8 @@ $headers = @{
 | `$TenantId` | `[string]` | Yes | — | Azure AD tenant ID |
 | `$ClientId` | `[string]` | Yes | — | App registration client ID |
 | `$Environment` | `[string]` | No | `"Public"` | Azure cloud: `Public`, `GCC`, `GCCH`, `DoD` |
+
+- Keep the base script and wrapper parameter surfaces in sync whenever parameters, defaults, validation attributes, or forwarding behavior change.
 
 - Acquires a token by calling the shared auth helper:
 
@@ -260,9 +270,31 @@ $headers = @{
 ```
 
 - For queries that need annotations: add `"Prefer" = "odata.include-annotations=*"` and `"Accept" = "application/json"`.
-- Use `Invoke-RestMethod` (not `Invoke-WebRequest`) for API calls.
+- Use `Invoke-RestMethod` for JSON API calls. `Invoke-WebRequest` is appropriate when raw response content or headers are required, such as multipart OData `$batch` parsing.
 - Convert payloads to JSON with `ConvertTo-Json -Depth 10` to handle nested objects.
 - Remove trailing slashes from URLs: `$OrganizationUrl = $OrganizationUrl.TrimEnd('/')`.
+
+---
+
+## Validation and Change Hygiene
+
+- Keep changes scoped to the requested script family. Do not reformat unrelated scripts or generated output.
+- After editing a script, parse every touched `.ps1` file with the PowerShell parser so syntax errors are caught without executing authenticated or destructive behavior:
+
+```powershell
+$errors = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile(
+    (Resolve-Path '.\Path\To\Script.ps1'),
+    [ref]$null,
+    [ref]$errors
+)
+if ($errors) { $errors | Format-List; exit 1 }
+```
+
+- Run the narrowest offline behavior check available. Do not call a live Dataverse, Graph, or SharePoint environment merely to validate syntax.
+- When changing a base script with a `WithAuth` pair, parse both files and verify that the wrapper forwards every applicable parameter.
+- When adding, removing, renaming, or materially changing a script, update the nearest README in the same change. Update the root README only when a top-level category or repo-wide workflow changes.
+- Do not commit generated report folders, CSV/JSON exports, Excel workbooks, access tokens, or `PowerShell.zip`. The portable zip is built from tracked files with `.githooks/Build-Zip.ps1`.
 
 ---
 
