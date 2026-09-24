@@ -330,7 +330,17 @@ function Get-AccessTokenInteractively {
             scope         = $authorizationScope
         }
 
-        return Invoke-RestMethod -Method Post -Uri $tokenEndpoint -ContentType "application/x-www-form-urlencoded" -Body $tokenRequestBody
+        try {
+            return Invoke-RestMethod -Method Post -Uri $tokenEndpoint -ContentType "application/x-www-form-urlencoded" -Body $tokenRequestBody
+        }
+        catch {
+            $errorDetail = [string]$_.ErrorDetails.Message
+            $errorText = "$($_.Exception.Message) $errorDetail"
+            if ($errorText -match 'AADSTS7000218|client_assertion|client secret') {
+                throw "Interactive authentication requires a public-client app registration. In Entra ID, add http://localhost under Authentication > Mobile and desktop applications and set Allow public client flows to Yes. Do not add a client secret to this local script. Original error: $($_.Exception.Message)"
+            }
+            throw
+        }
     }
     finally {
         if ($listener.IsListening) {
