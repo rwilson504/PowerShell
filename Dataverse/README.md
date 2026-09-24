@@ -5,6 +5,7 @@ Reusable scripts for Dataverse Web API operations, organized by purpose into sub
 ## Sub-categories
 
 - **[Analysis/](Analysis/README.md)** — usage analysis: record counts, fill rates, audit history, relationships, solution membership, UI presence, user activity, plus an orchestrator that runs them all and a workbook builder that combines the CSVs into a single Excel file.
+- **[Attachments/](Attachments/README.md)** — download note attachments directly related to a record GUID.
 - **[Schema/](Schema/README.md)** — schema operations: add/delete polymorphic relationships, extract help-page content from solution exports.
 - **[Users/](Users/README.md)** — user provisioning: sync individual users or all members of a security group into the environment.
 - **[Apps/](Apps/README.md)** — model-driven / canvas app administration.
