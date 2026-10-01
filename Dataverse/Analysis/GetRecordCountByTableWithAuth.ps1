@@ -15,6 +15,9 @@
 .PARAMETER Environment
     The Azure environment. Valid values are "Public", "GCC", "GCCH", "DoD". Default value is "Public".
 
+.PARAMETER AuthenticationMode
+    Authentication flow to use. Valid values are "DeviceCode" and "Interactive". Default "DeviceCode".
+
 .PARAMETER OrganizationUrl
     The URL of the Dataverse organization.
 
@@ -94,6 +97,10 @@ param (
     [Parameter(Mandatory = $false)]
     [ValidateSet("Public", "GCC", "GCCH", "DoD")]
     [string]$Environment = "Public",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("DeviceCode", "Interactive")]
+    [string]$AuthenticationMode = "DeviceCode",
     
     [Parameter(Mandatory = $true)]
     [string]$OrganizationUrl,
@@ -138,11 +145,11 @@ param (
     [string]$SolutionUniqueName
 )
 
-# Get the access token using device code flow
+# Get the access token
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $authScript = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
-$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment -AuthenticationMode $AuthenticationMode
 
 if (-not $accessToken) {
     Write-Error "Failed to acquire access token."

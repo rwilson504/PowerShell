@@ -16,6 +16,9 @@
 .PARAMETER Environment
     The Azure environment. Valid values are "Public", "GCC", "GCCH", "DoD". Default value is "Public".
 
+.PARAMETER AuthenticationMode
+    Authentication flow to use. Valid values are "DeviceCode" and "Interactive". Default "DeviceCode".
+
 .PARAMETER OutputFormat
     The output format. Valid values are "Table", "CSV", "JSON". Default is "Table".
 
@@ -36,20 +39,25 @@
     Gets all first-party service principals and exports to CSV.
 
 .EXAMPLE
+    .\GetFirstPartyServicePrincipalsWithAuth.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -AuthenticationMode Interactive
+
+    Opens the system browser for interactive sign-in and gets all first-party service principals.
+
+.EXAMPLE
     .\GetFirstPartyServicePrincipalsWithAuth.ps1 -TenantId "YOUR_TENANT_ID" -ClientId "YOUR_CLIENT_ID" -Environment "DoD" -IncludeDisabled
 
     Gets all first-party service principals including disabled ones in a DoD environment.
 
-.AUTHOR
-    Rick Wilson
-
 .NOTES
+    Author: Rick Wilson
+
     The app registration used must have Application.Read.All or Directory.Read.All
     permissions on Microsoft Graph.
 
     You can use the built-in "Microsoft Graph PowerShell" app registration
-    (AppId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) with the device code flow to acquire a token
-    with the necessary permissions.
+    (AppId: 14d82eec-204b-4c2f-b7e8-296a70dab67e) to acquire a token with the necessary
+    permissions. Interactive mode requires a public-client app registration with
+    http://localhost configured as a Mobile and desktop applications redirect URI.
 #>
 
 param (
@@ -62,6 +70,10 @@ param (
     [Parameter(Mandatory = $false)]
     [ValidateSet("Public", "GCC", "GCCH", "DoD")]
     [string]$Environment = "Public",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("DeviceCode", "Interactive")]
+    [string]$AuthenticationMode = "DeviceCode",
 
     [Parameter(Mandatory = $false)]
     [ValidateSet("Table", "CSV", "JSON")]
@@ -90,11 +102,11 @@ switch ($Environment) {
     }
 }
 
-# Get the access token using device code flow
+# Get the access token
 Write-Host "Acquiring access token for Microsoft Graph..." -ForegroundColor Cyan
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $authScript = Join-Path $scriptDir "GetAccessTokenDeviceCode.ps1"
-$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope $graphScope -Environment $Environment
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope $graphScope -Environment $Environment -AuthenticationMode $AuthenticationMode
 
 if (-not $accessToken) {
     Write-Error "Failed to acquire access token."

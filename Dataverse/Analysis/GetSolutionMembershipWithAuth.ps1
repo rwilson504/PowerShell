@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Acquires an access token via device code flow and reports per-component solution
+    Acquires an access token and reports per-component solution
     membership for Dataverse tables, attributes, and relationships.
 
 .PARAMETER TenantId
@@ -9,6 +9,8 @@
     The client ID of your registered Azure AD app.
 .PARAMETER Environment
     "Public", "GCC", "GCCH", or "DoD". Default "Public".
+.PARAMETER AuthenticationMode
+    Authentication flow to use. Valid values are "DeviceCode" and "Interactive". Default "DeviceCode".
 .PARAMETER OrganizationUrl
     The Dataverse organization URL.
 .PARAMETER Tables
@@ -40,6 +42,10 @@ param (
     [Parameter(Mandatory = $false)]
     [ValidateSet("Public", "GCC", "GCCH", "DoD")]
     [string]$Environment = "Public",
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("DeviceCode", "Interactive")]
+    [string]$AuthenticationMode = "DeviceCode",
 
     [Parameter(Mandatory = $true)]
     [string]$OrganizationUrl,
@@ -74,7 +80,7 @@ param (
 Write-Host "Acquiring access token..." -ForegroundColor Cyan
 $scriptDir   = Split-Path -Parent $MyInvocation.MyCommand.Path
 $authScript  = Join-Path $scriptDir "..\..\EntraID\GetAccessTokenDeviceCode.ps1"
-$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment
+$accessToken = & $authScript -TenantId $TenantId -ClientId $ClientId -Scope "$OrganizationUrl/user_impersonation" -Environment $Environment -AuthenticationMode $AuthenticationMode
 
 if (-not $accessToken) { Write-Error "Failed to acquire access token."; exit 1 }
 Write-Host "Access token acquired successfully." -ForegroundColor Green
