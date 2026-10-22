@@ -4,7 +4,9 @@
 
 .DESCRIPTION
     Uses the shared EntraID authentication helper, then calls NewStubUser.ps1.
-    Creates a placeholder, not a sign-in account. Use fictitious email/user names
+    Creates a disabled placeholder with systemmanagedusertype 0 (Entra User),
+    without an Entra identity or sign-in account. Does not request type 2
+    impersonation. Use fictitious email/user names
     that will never belong to real Entra users to avoid blocking later provisioning.
     No roles or organization settings are changed. The caller needs permission to
     read business units and read/create system users. See NewStubUser.ps1 for API

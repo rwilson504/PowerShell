@@ -5,7 +5,9 @@
 .DESCRIPTION
     Creates a placeholder systemuser for historical user references without creating
     a Microsoft Entra account. Sets isdisabled to true, islicensed to false, and
-    issyncwithdirectory to false. Does not link an Entra object or application.
+    issyncwithdirectory to false, and systemmanagedusertype to 0 (Entra User).
+    The type label does not require an Entra identity for this disabled placeholder.
+    Does not link an Entra object or application or request type 2 impersonation.
     Checks for an existing user by ID, email, or user name before creating anything,
     then retrieves the new record and verifies its stub-user flags.
 
@@ -160,6 +162,7 @@ $payload = @{
     isdisabled                   = $true
     islicensed                   = $false
     issyncwithdirectory           = $false
+    systemmanagedusertype        = 0
 }
 if ($PSBoundParameters.ContainsKey('Title')) {
     $payload.title = $Title
@@ -170,7 +173,7 @@ $jsonPayload = $payload | ConvertTo-Json -Depth 10
 # The ID is assigned client-side so a 204 response still permits an independent read-back.
 $null = Invoke-RestMethod -Method Post -Uri "$apiUrl/systemusers" -Headers $headers -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($jsonPayload)) -ErrorAction Stop
 
-$select = 'systemuserid,fullname,firstname,lastname,title,internalemailaddress,domainname,isdisabled,islicensed,issyncwithdirectory,azureactivedirectoryobjectid,applicationid,_businessunitid_value'
+$select = 'systemuserid,fullname,firstname,lastname,title,internalemailaddress,domainname,isdisabled,islicensed,issyncwithdirectory,systemmanagedusertype,azureactivedirectoryobjectid,applicationid,_businessunitid_value'
 try {
     $user = Invoke-RestMethod -Method Get -Uri "$apiUrl/systemusers($SystemUserId)?`$select=$select" -Headers $headers -ErrorAction Stop
 }
@@ -181,10 +184,11 @@ catch {
 if ($user.systemuserid -ne $SystemUserId.ToString() -or
     $user.isdisabled -ne $true -or $user.islicensed -ne $false -or
     $user.issyncwithdirectory -ne $false -or
+    $user.systemmanagedusertype -ne 0 -or
     ($user.azureactivedirectoryobjectid -and $user.azureactivedirectoryobjectid -ne [guid]::Empty.ToString()) -or
     ($user.applicationid -and $user.applicationid -ne [guid]::Empty.ToString()) -or
     $user._businessunitid_value -ne $BusinessUnitId.ToString()) {
-    throw "User $SystemUserId was created, but read-back did not verify a disabled, unlicensed, unsynchronized stub in the requested business unit with no Entra/application identity. Inspect the record before retrying; it was not automatically deleted."
+    throw "User $SystemUserId was created, but read-back did not verify a disabled, unlicensed, unsynchronized placeholder with systemmanagedusertype 0 (Entra User) in the requested business unit with no Entra/application identity. Inspect the record before retrying; it was not automatically deleted."
 }
 if ($PSBoundParameters.ContainsKey('Title') -and $user.title -cne $Title) {
     throw "User $SystemUserId was created, but read-back did not verify the requested title. Inspect the record before retrying; it was not automatically deleted."

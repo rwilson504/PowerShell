@@ -8,7 +8,7 @@ User-provisioning utilities — sync Entra users into an environment or create a
 |---|---|---|
 | [SyncUserByEmail.ps1](SyncUserByEmail.ps1) | Syncs a single user (looked up by email address) into the Dataverse environment. | n/a — uses the Power Platform PowerShell module's built-in auth |
 | [SyncUsersFromSecurityGroup.ps1](SyncUsersFromSecurityGroup.ps1) | Syncs every member of a Microsoft Entra security group into the environment. | n/a — uses the Power Platform PowerShell module's built-in auth |
-| [NewStubUser.ps1](NewStubUser.ps1) | Creates and verifies a disabled, unlicensed, unsynchronized stub user through the Web API. | Yes — [NewStubUserWithAuth.ps1](NewStubUserWithAuth.ps1) |
+| [NewStubUser.ps1](NewStubUser.ps1) | Creates and verifies a disabled, unlicensed, unsynchronized type-0 placeholder through the Web API. | Yes — [NewStubUserWithAuth.ps1](NewStubUserWithAuth.ps1) |
 | [NewStubUserWithAuth.ps1](NewStubUserWithAuth.ps1) | Acquires a token and creates a disabled stub user through the Web API. | Wrapper for [NewStubUser.ps1](NewStubUser.ps1) |
 | [UpdateStubUser.ps1](UpdateStubUser.ps1) | Updates selected name, title, email or user-name fields on a verified existing stub user. | Yes — [UpdateStubUserWithAuth.ps1](UpdateStubUserWithAuth.ps1) |
 | [UpdateStubUserWithAuth.ps1](UpdateStubUserWithAuth.ps1) | Acquires a token and updates selected profile fields on an existing stub user. | Wrapper for [UpdateStubUser.ps1](UpdateStubUser.ps1) |
@@ -24,11 +24,34 @@ preflight checks, not a concurrency lock: do not run parallel creates for the sa
 None of the stub scripts assign roles, change organization settings, or guarantee ownership
 eligibility. All support `-WhatIf` without API calls; the wrappers also skip sign-in.
 
+Creation explicitly sets and verifies `systemmanagedusertype = 0` (Entra User).
+Despite the label, this disabled, unlicensed placeholder does not need an
+Entra account. This does not reclassify existing users; the profile-update scripts
+preserve their current system-managed user type.
+
+Type 2 (Impersonable Stub User) is a separate, restricted feature, not a requirement
+for ordinary historical placeholders. Type-2 creation was rejected in both the
+Developer and Production-type test environments because Stub User Impersonation
+was not enabled. These scripts do not request it. Do not confuse that feature with
+`AllowRoleAssignmentOnDisabledUsers`, which only allows assigning roles to
+disabled users. The [settings utilities](../Settings/README.md) can manage
+supported OrgDBOrgSettings keys but do not discover or bypass feature gates.
+
 The [Microsoft admin documentation](https://learn.microsoft.com/en-us/power-platform/admin/create-users#how-stub-users-are-created)
 describes data import. The Web API approach is described by
 [The Apps Bakery](https://theappsbakery.com/migrating-non-existing-users-to-dataverse/),
 and the unlicensed/unsynchronized field settings by
 [KingswaySoft](https://www.kingswaysoft.com/blog/2023/01/24/Manage-Unlicensed-Users-in-CRM-Using-KingswaySoft).
+In a live native CSV import test, Dataverse created a type-0 user with no Entra
+identity, disabled/unlicensed/unsynchronized flags, and an automatically assigned
+Salesperson role. That import used only name, email, and user-name fields; native
+import rejected an explicit `isdisabled` mapping as not valid for create.
+A separate live test of the direct Web API creation script also verified a
+disabled, unlicensed, unsynchronized type-0 user with no Entra/application
+identity and an automatically assigned Salesperson role. These scripts remain
+direct-create utilities, not native import wrappers. Automatic role assignment
+is platform/environment behavior; the scripts do not explicitly assign a role
+or guarantee that one will be assigned.
 Validate this approach in a non-production environment before migration use.
 If creation succeeds but verification fails, inspect the reported user ID before
 retrying; the script does not automatically delete the record.
